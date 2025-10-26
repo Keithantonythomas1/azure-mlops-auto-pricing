@@ -1,0 +1,7 @@
+{
+  "subscription_id": "f7583458-6f5b-4491-add9-f827568d2957",
+  "resource_group": "MSFT-AI-Class",
+  "workspace_name": "MyFirstWorkSpace",
+  "compute": "Keith-Compute",
+  "location": "eastus"
+}

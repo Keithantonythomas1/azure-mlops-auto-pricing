@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+.env
+.venv
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+.notebooks/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Azure ML / MLflow artifacts
+mlruns/
+outputs/

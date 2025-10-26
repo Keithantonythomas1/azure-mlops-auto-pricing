@@ -1,0 +1,52 @@
+name: aml-mlops-cicd
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-train-register:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Azure CLI
+        uses: azure/cli@v2
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r <(python - <<'PY'
+import yaml,sys
+print('\n'.join([l for l in open('env/conda.yml') if l.strip().startswith('- ') and 'pip:' not in l]))
+PY
+ )
+          pip install azure-ai-ml==1.20.0 mlflow==2.16.0 scikit-learn==1.5.2 pandas==2.2.2 numpy==1.26.4 joblib==1.4.2 matplotlib==3.9.0
+
+      - name: Submit Azure ML pipeline
+        env:
+          AML_SUBSCRIPTION_ID: ${{ secrets.AML_SUBSCRIPTION_ID }}
+          AML_RESOURCE_GROUP: ${{ secrets.AML_RESOURCE_GROUP }}
+          AML_WORKSPACE_NAME: ${{ secrets.AML_WORKSPACE_NAME }}
+          AML_COMPUTE_NAME: ${{ secrets.AML_COMPUTE_NAME }}
+          AML_LOCATION: ${{ secrets.AML_LOCATION }}
+        run: |
+          python aml/pipeline.py
+
+      - name: Post run info
+        if: always()
+        run: echo "Pipeline submitted. Check Azure ML Studio → Jobs for status."
