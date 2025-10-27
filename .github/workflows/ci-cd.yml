@@ -30,23 +30,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r <(python - <<'PY'
-import yaml,sys
-print('\n'.join([l for l in open('env/conda.yml') if l.strip().startswith('- ') and 'pip:' not in l]))
-PY
- )
           pip install azure-ai-ml==1.20.0 mlflow==2.16.0 scikit-learn==1.5.2 pandas==2.2.2 numpy==1.26.4 joblib==1.4.2 matplotlib==3.9.0
 
       - name: Submit Azure ML pipeline
         env:
-          AML_SUBSCRIPTION_ID: ${{ secrets.AML_SUBSCRIPTION_ID }}
-          AML_RESOURCE_GROUP: ${{ secrets.AML_RESOURCE_GROUP }}
-          AML_WORKSPACE_NAME: ${{ secrets.AML_WORKSPACE_NAME }}
-          AML_COMPUTE_NAME: ${{ secrets.AML_COMPUTE_NAME }}
-          AML_LOCATION: ${{ secrets.AML_LOCATION }}
+          AML_SUBSCRIPTION_ID: f7583458-6f5b-4491-add9-f827568d2957
+          AML_RESOURCE_GROUP: MSFT-AI-Class
+          AML_WORKSPACE_NAME: MyFirstWorkSpace
+          AML_COMPUTE_NAME: Keith-Compute
+          AML_LOCATION: eastus
         run: |
           python aml/pipeline.py
 
-      - name: Post run info
-        if: always()
-        run: echo "Pipeline submitted. Check Azure ML Studio → Jobs for status."
