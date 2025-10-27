@@ -1,24 +1,23 @@
 # aml/pipeline.py
 import os
 import json
-
 from azure.identity import DefaultAzureCredential
 from azure.ai.ml import MLClient, Input, Output, dsl, command
 from azure.ai.ml.entities import Environment
 
 
-# -----------------------------
-# Load AML config from repo
-# -----------------------------
+# ==========================================================
+# 1️⃣ Load AML Configuration
+# ==========================================================
 def load_cfg() -> dict:
     """
-    Reads configs/aml_config.json unless AML_CONFIG_PATH is set.
-    The file is expected to contain:
+    Loads AML workspace configuration from configs/aml_config.json.
+    Expected keys:
       {
         "subscription_id": "...",
         "resource_group": "...",
         "workspace_name": "...",
-        "compute": "Keith-Compute"   # optional; defaults to 'cpu-cluster'
+        "compute": "Keith-Compute"
       }
     """
     cfg_path = os.environ.get("AML_CONFIG_PATH", "configs/aml_config.json")
@@ -28,9 +27,10 @@ def load_cfg() -> dict:
 
 cfg = load_cfg()
 
-# -----------------------------
-# MLClient (auth via DefaultAzureCredential)
-# -----------------------------
+
+# ==========================================================
+# 2️⃣ Connect to Azure ML Workspace
+# ==========================================================
 cred = DefaultAzureCredential()
 ml_client = MLClient(
     credential=cred,
@@ -39,49 +39,44 @@ ml_client = MLClient(
     workspace_name=cfg["workspace_name"],
 )
 
-# -----------------------------
-# Runtime environment
-# -----------------------------
+# ==========================================================
+# 3️⃣ Define Environment
+# ==========================================================
 env = Environment(
     name="auto-pricing-env",
     conda_file="env/conda.yml",
     image="mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest",
 )
 
-compute_target = cfg.get("compute", "cpu-cluster")
+compute_target = cfg.get("compute", "Keith-Compute")
 
-# -----------------------------
-# Components
-# -----------------------------
 
-# 1) Prep
+# ==========================================================
+# 4️⃣ Define Components
+# ==========================================================
+
+# --- Data Prep Component ---
 prep_component = command(
     name="prep",
-    display_name="Data Prep",
+    display_name="Data Preparation",
     environment=env,
-    code=".",  # repo root
+    code=".",  # directory containing scripts/
     command="python scripts/prep.py",
     compute=compute_target,
-    inputs={
-        # Azure ML data asset (uri_file) created in your workspace
-        "data_file": Input(type="uri_file", path="azureml:UsedCars:1")
-    },
-    # make raw path available to the script if it uses DATA_PATH
+    inputs={"data_file": Input(type="uri_file", path="azureml:UsedCars:1")},
     environment_variables={"DATA_PATH": "${{inputs.data_file}}"},
-    # Let AML place outputs automatically (avoids path warnings/collisions)
     outputs={"prep_outputs": Output(type="uri_folder")},
 )
 
-# 2) Train
+# --- Training Component ---
 train_component = command(
     name="train",
-    display_name="Train Baseline",
+    display_name="Train Model",
     environment=env,
     code=".",
     command="python scripts/train.py",
     compute=compute_target,
     inputs={
-        # INPUT_DIR will be wired in the pipeline using Input(path=...)
         "INPUT_DIR": Input(type="uri_folder"),
         "N_ESTIMATORS": 200,
         "MAX_DEPTH": 12,
@@ -89,7 +84,7 @@ train_component = command(
     outputs={"train_outputs": Output(type="uri_folder")},
 )
 
-# 3) Tune
+# --- Hyperparameter Tuning Component ---
 tune_component = command(
     name="tune",
     display_name="Hyperparameter Tuning",
@@ -97,23 +92,11 @@ tune_component = command(
     code=".",
     command="python scripts/tune.py",
     compute=compute_target,
-    inputs={
-        # INPUT_DIR will be wired in the pipeline using Input(path=...)
-        "INPUT_DIR": Input(type="uri_folder"),
-    },
-    outputs={
-        # Complete tuning artifacts
-        "tune_outputs": Output(type="uri_folder"),
-        # (optional) If your tune.py writes a dedicated best model file,
-        # you can expose it as a separate uri_file output instead.
-        # "best_model": Output(type="uri_file"),
-    },
+    inputs={"INPUT_DIR": Input(type="uri_folder")},
+    outputs={"tune_outputs": Output(type="uri_folder")},
 )
 
-# 4) Register
-# NOTE:
-# We keep the expression using the *parent* context so this input resolves at
-# pipeline build time to the *tune* job’s output folder and file.
+# --- Model Registration Component ---
 register_component = command(
     name="register",
     display_name="Register Model",
@@ -121,42 +104,40 @@ register_component = command(
     code=".",
     command="python scripts/register_model.py",
     compute=compute_target,
-    inputs={
-        # If your best model file is written as `best_model.pkl` in tune_outputs,
-        # pass that concrete path using pipeline expression. Do not override this
-        # in the pipeline body with a raw NodeOutput.
-        "MODEL_PATH": Input(
-            type="uri_file",
-            path="${{parent.jobs.tune.outputs.tune_outputs}}/best_model.pkl",
-        )
-    },
+    inputs={"MODEL_PATH": Input(type="uri_file")},
 )
 
-# -----------------------------
-# Pipeline definition (DSL)
-# -----------------------------
-@dsl.pipeline(compute=compute_target, description="Auto pricing MLOps pipeline")
+
+# ==========================================================
+# 5️⃣ Build the Pipeline (DSL)
+# ==========================================================
+@dsl.pipeline(compute=compute_target, description="Auto Pricing MLOps Pipeline")
 def auto_pricing_pipeline():
-    # Run prep
+    # Step 1: Prep
     prep = prep_component()
 
-    # Feed prep -> train using Input(path=...) so AML treats it as a valid pipeline input
+    # Step 2: Train (input = prep output)
     train = train_component(
         INPUT_DIR=Input(path=prep.outputs.prep_outputs, type="uri_folder"),
         N_ESTIMATORS=200,
         MAX_DEPTH=12,
     )
 
-    # Feed prep -> tune similarly
+    # Step 3: Tune (input = prep output)
     tune = tune_component(
         INPUT_DIR=Input(path=prep.outputs.prep_outputs, type="uri_folder")
     )
 
-    # DO NOT override MODEL_PATH with a NodeOutput here. The register component
-    # already contains a pipeline expression that points at the tune output file.
-    reg = register_component()
+    # Step 4: Register (input = tune output file)
+    reg = register_component(
+        MODEL_PATH=Input(
+            type="uri_file",
+            # This expression resolves *at runtime* inside the pipeline
+            path="${{jobs.tune.outputs.tune_outputs}}/best_model.pkl",
+        )
+    )
 
-    # Optionally expose top-level pipeline outputs (useful for debugging)
+    # Optional outputs (for visibility in AML Studio)
     return {
         "prep_outputs": prep.outputs.prep_outputs,
         "train_outputs": train.outputs.train_outputs,
@@ -164,17 +145,19 @@ def auto_pricing_pipeline():
     }
 
 
-# -----------------------------
-# Submit
-# -----------------------------
+# ==========================================================
+# 6️⃣ Submit the Pipeline
+# ==========================================================
 if __name__ == "__main__":
+    print("Submitting Auto Pricing pipeline to Azure ML ...")
     pipeline_job = auto_pricing_pipeline()
     pipeline_job = ml_client.jobs.create_or_update(
         pipeline_job, experiment_name="auto-pricing-e2e"
     )
-    print(f"Submitted pipeline job: {pipeline_job.name}")
 
-    # In CI, stream logs until completion
+    print(f"✅ Submitted pipeline job: {pipeline_job.name}")
+
+    # Stream logs if running in CI
     try:
         from azure.ai.ml._azure_environ import _is_in_ci
 
