@@ -25,13 +25,17 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
           
-      - name: Install dependencies
+      - name: Install dependencies (pin compatible versions)
         run: |
           python -m pip install --upgrade pip
-          # pin marshmallow to v3 to satisfy azure-ai-ml
-          pip install "marshmallow<4,>=3.18"
-          pip install azure-ai-ml==1.20.0 mlflow==2.16.0 scikit-learn==1.5.2 pandas==2.2.2 numpy==1.26.4 joblib==1.4.2 matplotlib==3.9.0
-
+          # start clean to avoid a cached incompatible marshmallow
+          pip uninstall -y marshmallow || true
+          # this pair is known to work together
+          pip install "marshmallow==3.21.1" "azure-ai-ml==1.14.0"
+          # rest of your deps
+          pip install mlflow==2.16.0 scikit-learn==1.5.2 pandas==2.2.2 numpy==1.26.4 joblib==1.4.2 matplotlib==3.9.0
+          # show what actually got installed (for quick debugging if needed)
+          python -c "import marshmallow, azure.ai.ml as aml; print('marshmallow', marshmallow.__version__); print('azure-ai-ml', aml.__version__)"
 
       - name: Submit Azure ML pipeline
         env:
