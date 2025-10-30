@@ -7,13 +7,12 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-# Cancel older in-flight runs for the same branch
 concurrency:
   group: aml-mlops-cicd-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  id-token: write        # Required for Azure OIDC login
+  id-token: write
   contents: read
   actions: read
 
@@ -22,13 +21,10 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Azure workspace settings — update if changed
       AZURE_SUBSCRIPTION_ID: "f7583458-6f5b-4491-add9-f827568d2957"
       AZURE_RESOURCE_GROUP: "MSFT-AI-Class"
       AZURE_ML_WORKSPACE: "MyFirstWorkSpace"
       AZURE_ML_COMPUTE: "Keith-Compute"
-
-      # Optional: performance threshold for quality gate
       ACC_THRESHOLD: "0.80"
 
     steps:
@@ -55,8 +51,8 @@ jobs:
           pip install mlflow==2.16.0 scikit-learn==1.5.2 pandas==2.2.2 numpy==1.26.4 joblib==1.4.2 matplotlib==3.9.0
           python - <<'PY'
           import marshmallow, azure.ai.ml as aml
-          print("✅ marshmallow:", marshmallow.__version__)
-          print("✅ azure-ai-ml:", aml.__version__)
+          print("marshmallow:", marshmallow.__version__)
+          print("azure-ai-ml:", aml.__version__)
           PY
 
       - name: Submit Azure ML pipeline
@@ -64,7 +60,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "🚀 Submitting Azure ML pipeline..."
           python aml/pipeline.py \
             --subscription "${AZURE_SUBSCRIPTION_ID}" \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
@@ -78,38 +73,37 @@ jobs:
 
       - name: Quality gate
         run: |
-          echo "🧮 Evaluating quality gate..."
           python - <<'PY'
           import json, os, sys
-          thr = float(os.environ.get("ACC_THRESHOLD", "0"))
+          thr = float(os.environ.get("ACC_THRESHOLD","0"))
           try:
             with open("metrics.json") as f:
               m = json.load(f)
           except FileNotFoundError:
-            print("❌ metrics.json not found — failing for safety.")
+            print("metrics.json not found; failing.")
             sys.exit(1)
           acc = float(m.get("accuracy", 0))
-          print(f"📊 Reported accuracy: {acc:.4f} (threshold: {thr:.4f})")
+          print(f"accuracy={acc:.4f} threshold={thr:.4f}")
           if acc < thr:
-            print("❌ Quality gate failed.")
+            print("Quality gate failed.")
             sys.exit(2)
-          print("✅ Quality gate passed.")
+          print("Quality gate passed.")
           PY
 
       - name: Attach run summary
         if: always()
         run: |
-          echo "## 🧩 Azure ML Run Summary" >> "$GITHUB_STEP_SUMMARY"
-          for file in run_info.json model_info.json metrics.json; do
-            if [ -f "$file" ]; then
-              echo "### ${file}" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Azure ML Run Summary" >> "$GITHUB_STEP_SUMMARY"
+          for f in run_info.json model_info.json metrics.json; do
+            if [ -f "$f" ]; then
+              echo "### $f" >> "$GITHUB_STEP_SUMMARY"
               echo '```json' >> "$GITHUB_STEP_SUMMARY"
-              cat "$file" >> "$GITHUB_STEP_SUMMARY"
+              cat "$f" >> "$GITHUB_STEP_SUMMARY"
               echo '```' >> "$GITHUB_STEP_SUMMARY"
             fi
           done
 
-      - name: Upload run artifacts (run, model, metrics)
+      - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
