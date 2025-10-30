@@ -1,37 +1,26 @@
-import os
-import json
-from azure.ai.ml import MLClient
+# scripts/register_model.py (snippet)
+import json, argparse, pathlib
 from azure.identity import DefaultAzureCredential
+from azure.ai.ml import MLClient
 
-def load_cfg():
-    # Expect env-based substitution if running in GH Actions
-    cfg_path = os.environ.get("AML_CONFIG_PATH", "configs/aml_config.json")
-    with open(cfg_path, "r") as f:
-        raw = f.read()
-    # naive env substitution for secrets format ${{ secrets.VAR }}
-    # Using concrete values from configs/aml_config.json (already set).
-    return json.loads(raw)
+p = argparse.ArgumentParser()
+p.add_argument("--model", required=True)   # path to best_model.pkl
+p.add_argument("--out", required=True)     # NEW: single-file uri output
+args = p.parse_args()
 
-if __name__ == "__main__":
-    cfg = load_cfg()
-    cred = DefaultAzureCredential()
-    mlclient = MLClient(credential=cred,
-                        subscription_id=cfg["subscription_id"],
-                        resource_group_name=cfg["resource_group"],
-                        workspace_name=cfg["workspace_name"])
-    # Register from local artifact (best_model.pkl) as a generic model asset
-    model_path = os.environ.get("MODEL_PATH", "outputs/best_model.pkl")
-    if not os.path.exists(model_path):
-        model_path = os.environ.get("MODEL_PATH_FALLBACK", "outputs/model.pkl")
-    name = os.environ.get("MODEL_NAME", "auto-pricing-rf")
-    version = os.environ.get("MODEL_VERSION")  # optionally inject
-    from azure.ai.ml.entities import Model
-    model = Model(
-        name=name,
-        path=model_path,
-        type="mlflow_model" if model_path.endswith("mlflow") else "custom_model",
-        description="Random Forest model for vehicle price prediction (luxury & non-luxury segments).",
-        tags={"project":"auto-pricing-mlops"}
-    )
-    registered = mlclient.models.create_or_update(model)
-    print(f"Registered model: {registered.name}:{registered.version}")
+mlc = MLClient(DefaultAzureCredential(),
+               subscription_id=os.environ["AZUREML_ARM_SUBSCRIPTION"],
+               resource_group_name=os.environ["AZUREML_ARM_RESOURCEGROUP"],
+               workspace_name=os.environ["AZUREML_ARM_WORKSPACE_NAME"])
+
+# register using MLflow format or custom — example uses path model/
+model_name = "auto-pricing"
+registered = mlc.models.create_or_update({
+    "name": model_name,
+    "path": args.model,       # adjust if you package a folder
+    "type": "custom_model",   # or "mlflow_model" if applicable
+})
+
+pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+with open(args.out, "w") as f:
+    json.dump({"name": registered.name, "version": str(registered.version)}, f, indent=2)
