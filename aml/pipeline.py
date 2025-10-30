@@ -8,6 +8,7 @@ from azure.identity import DefaultAzureCredential
 from azure.ai.ml import MLClient, dsl, Input, Output, command
 from azure.ai.ml.entities import Environment
 
+
 # ----------------------------
 # Helpers
 # ----------------------------
@@ -17,6 +18,7 @@ def write_json(path: str, payload: dict):
     with p.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
+
 # ----------------------------
 # Reusable environment
 # ----------------------------
@@ -25,6 +27,7 @@ env = Environment(
     conda_file="env/conda.yml",
     image="mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest",
 )
+
 
 # ----------------------------
 # Define individual steps
@@ -36,7 +39,7 @@ prep_job = command(
     inputs={"data": Input(type="uri_file")},
     outputs={"prep_dir": Output(type="uri_folder", mode="rw_mount")},
     environment=env,
-    compute="${{parent.compute}}",   # resolved from pipeline compute
+    compute="${{parent.compute}}",
     display_name="prep",
 )
 
@@ -87,12 +90,12 @@ reg_job = command(
     display_name="reg",
 )
 
+
 # ----------------------------
 # Pipeline Definition
 # ----------------------------
 @dsl.pipeline(description="Auto pricing full MLOps pipeline")
 def auto_pricing_pipeline(data_path: Input, compute: str):
-    # NOTE: we pass compute down via parent context
     prep_step = prep_job(data=data_path)
     train_step = train_job(data_dir=prep_step.outputs.prep_dir)
     tune_step = tune_job(data_dir=prep_step.outputs.prep_dir)
@@ -105,30 +108,51 @@ def auto_pricing_pipeline(data_path: Input, compute: str):
         "model_info": reg_step.outputs.model_info,
     }
 
+
 # ----------------------------
 # CLI & Submission
 # ----------------------------
 def parse_args():
     p = argparse.ArgumentParser("Submit Azure ML pipeline")
-    p.add_argument("--subscription", required=False,
-                   default=os.getenv("AZURE_SUBSCRIPTION_ID", "f7583458-6f5b-4491-add9-f827568d2957"))
-    p.add_argument("--resource-group", required=False,
-                   default=os.getenv("AZURE_RESOURCE_GROUP", "MSFT-AI-Class"))
-    p.add_argument("--workspace", required=False,
-                   default=os.getenv("AZURE_ML_WORKSPACE", "MyFirstWorkSpace"))
-    p.add_argument("--compute", required=False, default=os.getenv("AZURE_ML_COMPUTE", "Keith-Compute"))
-    p.add_argument("--experiment-name", required=False, default="auto-pricing-e2e")
+    p.add_argument(
+        "--subscription",
+        dest="subscription",
+        default=os.getenv("AZURE_SUBSCRIPTION_ID", "f7583458-6f5b-4491-add9-f827568d2957"),
+    )
+    p.add_argument(
+        "--resource-group",
+        dest="resource_group",
+        default=os.getenv("AZURE_RESOURCE_GROUP", "MSFT-AI-Class"),
+    )
+    p.add_argument(
+        "--workspace",
+        dest="workspace",
+        default=os.getenv("AZURE_ML_WORKSPACE", "MyFirstWorkSpace"),
+    )
+    p.add_argument(
+        "--compute",
+        dest="compute",
+        default=os.getenv("AZURE_ML_COMPUTE", "Keith-Compute"),
+    )
+    p.add_argument(
+        "--experiment-name",
+        dest="experiment_name",
+        default="auto-pricing-e2e",
+    )
+    # Registered data asset (from your screenshots)
+    p.add_argument(
+        "--data-asset",
+        dest="data_asset",
+        default="azureml:UsedCars:1",
+    )
 
-    # Use the registered data asset shown in your screenshots
-    p.add_argument("--data-asset", required=False, default="azureml:UsedCars:1")
+    # CI artifact paths
+    p.add_argument("--run-out", dest="run_out", default="run.json")
+    p.add_argument("--model-out", dest="model_out", default="model_info.json")
+    p.add_argument("--metrics-out", dest="metrics_out", default="metrics.json")
 
-    # These are for CI artifacts
-    p.add_argument("--run-out", required=False, default="run.json")
-    p.add_argument("--model-out", required=False, default="model_info.json")
-    p.add_argument("--metrics-out", required=False, default="metrics.json")
-
-    # Accept but ignore to keep current workflow compatible
-    p.add_argument("--location", required=False, help="(Ignored) kept for backwards compatibility")
+    # Keep for backward compatibility; ignored
+    p.add_argument("--location", dest="location", required=False)
 
     return p.parse_args()
 
@@ -145,44 +169,52 @@ def main():
         workspace_name=args.workspace,
     )
 
-    # Build pipeline using the data asset already in the workspace
-    data_input = Input(type="uri_file", path=args.data-asset)
+    # Use the registered data asset in the workspace
+    data_input = Input(type="uri_file", path=args.data_asset)
+
     pipeline_job = auto_pricing_pipeline(
         data_path=data_input,
         compute=args.compute,
     )
     pipeline_job.settings.default_compute = args.compute
-    pipeline_job.experiment_name = args.experiment-name if hasattr(args, "experiment-name") else args.experiment_name
+    pipeline_job.experiment_name = args.experiment_name
 
-    # Submit
     submitted = ml_client.jobs.create_or_update(pipeline_job)
     print(f"Submitted pipeline job: {submitted.name}")
-    ml_client.jobs.stream(submitted.name)
+    try:
+        ml_client.jobs.stream(submitted.name)
+    except Exception as e:
+        # Streaming isn't critical; continue even if it fails
+        print(f"Streaming failed (non-fatal): {e}")
 
-    # Refresh to read final outputs
     final_job = ml_client.jobs.get(submitted.name)
 
-    # Prepare simple outputs for CI summary
+    # Build simple artifact payloads
+    outputs = getattr(final_job, "outputs", {}) or {}
+    def _safe_uri(key):
+        try:
+            return outputs[key].uri if key in outputs and hasattr(outputs[key], "uri") else None
+        except Exception:
+            return None
+
     run_payload = {
         "job_name": final_job.name,
-        "status": final_job.status,
-        "experiment_name": getattr(final_job, "experiment_name", args.experiment_name),
-        "studio_url": getattr(final_job, "services", {}).get("Studio", {}).get("endpoint", None)
+        "status": getattr(final_job, "status", None),
+        "experiment_name": args.experiment_name,
+        "studio_url": getattr(getattr(final_job, "services", {}), "get", lambda *_: None)("Studio", {}).get("endpoint", None)
         if hasattr(final_job, "services") else None,
         "outputs": {
-            k: (getattr(v, "uri", None) if hasattr(v, "uri") else None)
-            for k, v in getattr(final_job, "outputs", {}).items()
+            "prep_dir": _safe_uri("prep_dir"),
+            "train_dir": _safe_uri("train_dir"),
+            "metrics": _safe_uri("metrics"),
+            "best_dir": _safe_uri("best_dir"),
+            "model_info": _safe_uri("model_info"),
         },
     }
+
     write_json(args.run_out, run_payload)
-
-    # Best-effort model/metrics files for downstream steps
-    outputs = getattr(final_job, "outputs", {})
-    model_uri = outputs.get("model_info").uri if "model_info" in outputs else None
-    metrics_uri = outputs.get("metrics").uri if "metrics" in outputs else None
-
-    write_json(args.model_out, {"model_info_uri": model_uri})
-    write_json(args.metrics_out, {"metrics_uri": metrics_uri})
+    write_json(args.model_out, {"model_info_uri": _safe_uri("model_info")})
+    write_json(args.metrics_out, {"metrics_uri": _safe_uri("metrics")})
 
     print(f"Wrote run info to {args.run_out}")
     print(f"Wrote model info to {args.model_out}")
