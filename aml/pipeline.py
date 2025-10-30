@@ -1,18 +1,14 @@
 # aml/pipeline.py
 import os
 import json
-import shutil
-from pathlib import Path
-
 from azure.identity import DefaultAzureCredential
 from azure.ai.ml import MLClient, dsl, Input, Output, command
 from azure.ai.ml.entities import Environment
 
 # ----------------------------
-# 1) Load AML config (allows env override)
+# 1) Load AML config
 # ----------------------------
 def load_cfg():
-    # Prefer explicit path via env, else default file
     cfg_path = os.environ.get("AML_CONFIG_PATH", "configs/aml_config.json")
     with open(cfg_path, "r") as f:
         return json.load(f)
@@ -36,172 +32,106 @@ env = Environment(
     image="mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest",
 )
 
-compute_target = cfg.get("compute", "Keith-Compute")
-
 # ----------------------------
-# 3) Components
+# 3) Define individual steps
 # ----------------------------
 
-# PREP
-prep_component = command(
-    name="prep",
-    display_name="Data Prep",
-    environment=env,
-    code=".",
-    compute=compute_target,
+# ---- Data Prep ----
+prep_job = command(
+    code="./scripts",
+    command="python prep.py --data ${{inputs.data}} --out ${{outputs.prep_dir}}",
     inputs={
-        # Make sure this data asset exists in your workspace
-        "data_file": Input(type="uri_file", path=cfg.get("data_asset", "azureml:UsedCars:1")),
+        "data": Input(type="uri_file")
     },
     outputs={
-        "prep_dir": Output(type="uri_folder"),
+        "prep_dir": Output(type="uri_folder", mode="rw_mount")
     },
-    command=(
-        "python scripts/prep.py "
-        "--data ${{inputs.data_file}} "
-        "--out  ${{outputs.prep_dir}}"
-    ),
+    environment=env,
+    compute=cfg["compute_target"],
+    display_name="prep",
 )
 
-# TRAIN — add a tiny single-file metrics output
-train_component = command(
-    name="train",
-    display_name="Train Baseline",
-    environment=env,
-    code=".",
-    compute=compute_target,
-    inputs={
-        "data_dir": Input(type="uri_folder"),
-        "n_estimators": 200,
-        "max_depth": 12,
-    },
-    outputs={
-        "train_dir": Output(type="uri_folder"),
-        "metrics":   Output(type="uri_file"),   # NEW
-    },
+# ---- Train ----
+train_job = command(
+    code="./scripts",
     command=(
-        "python scripts/train.py "
-        "--data ${{inputs.data_dir}} "
-        "--n_estimators ${{inputs.n_estimators}} "
-        "--max_depth ${{inputs.max_depth}} "
-        "--out  ${{outputs.train_dir}} "
-        "--metrics ${{outputs.metrics}}"        # NEW
+        "python train.py "
+        "--data_dir ${{inputs.data_dir}} "
+        "--train_dir ${{outputs.train_dir}} "
+        "--metrics ${{outputs.metrics}} "
+        "--n_estimators 200 "
+        "--max_depth 12"
     ),
-)
-
-# TUNE
-tune_component = command(
-    name="tune",
-    display_name="Hyperparameter Tuning",
-    environment=env,
-    code=".",
-    compute=compute_target,
     inputs={
         "data_dir": Input(type="uri_folder"),
     },
     outputs={
-        "best_dir": Output(type="uri_folder"),
+        "train_dir": Output(type="uri_folder", mode="rw_mount"),
+        "metrics": Output(type="uri_folder", mode="rw_mount"),
     },
-    command=(
-        "python scripts/tune.py "
-        "--data ${{inputs.data_dir}} "
-        "--out  ${{outputs.best_dir}}"
-    ),
+    environment=env,
+    compute=cfg["compute_target"],
+    display_name="train",
 )
 
-# REGISTER — add a tiny single-file model_info output
-register_component = command(
-    name="register",
-    display_name="Register Model",
+# ---- Tune ----
+tune_job = command(
+    code="./scripts",
+    command=(
+        "python tune.py "
+        "--data_dir ${{inputs.data_dir}} "
+        "--best_dir ${{outputs.best_dir}}"
+    ),
+    inputs={
+        "data_dir": Input(type="uri_folder"),
+    },
+    outputs={
+        "best_dir": Output(type="uri_folder", mode="rw_mount"),
+    },
     environment=env,
-    code=".",
-    compute=compute_target,
+    compute=cfg["compute_target"],
+    display_name="tune",
+)
+
+# ---- Register Model ----
+reg_job = command(
+    code="./scripts",
+    command="python reg.py --best_dir ${{inputs.best_dir}} --model_info ${{outputs.model_info}}",
     inputs={
         "best_dir": Input(type="uri_folder"),
     },
     outputs={
-        "model_info": Output(type="uri_file"),  # NEW
+        "model_info": Output(type="uri_folder", mode="rw_mount"),
     },
-    command=(
-        "python scripts/register_model.py "
-        "--model ${{inputs.best_dir}}/best_model.pkl "
-        "--out   ${{outputs.model_info}}"       # NEW
-    ),
+    environment=env,
+    compute=cfg["compute_target"],
+    display_name="reg",
 )
 
 # ----------------------------
-# 4) Pipeline wiring
+# 4) Pipeline Definition
 # ----------------------------
 @dsl.pipeline(
-    compute=compute_target,
-    description="Auto pricing MLOps pipeline (prep -> train -> tune -> register).",
+    compute=cfg["compute_target"],
+    description="Auto pricing full MLOps pipeline",
 )
-def auto_pricing_pipeline():
-    prep = prep_component()
-    train = train_component(data_dir=prep.outputs.prep_dir)
-    tune  = tune_component(data_dir=prep.outputs.prep_dir)
-    reg   = register_component(best_dir=tune.outputs.best_dir)
-
-    # Expose outputs so we can download them after completion
+def auto_pricing_pipeline(data_path: Input):
+    prep_step = prep_job(data=data_path)
+    train_step = train_job(data_dir=prep_step.outputs.prep_dir)
+    tune_step = tune_job(data_dir=prep_step.outputs.prep_dir)
+    reg_step = reg_job(best_dir=tune_step.outputs.best_dir)
     return {
-        "prep_dir":   prep.outputs.prep_dir,
-        "train_dir":  train.outputs.train_dir,
-        "metrics":    train.outputs.metrics,     # NEW
-        "best_dir":   tune.outputs.best_dir,
-        "model_info": reg.outputs.model_info,    # NEW
+        "prep_dir": prep_step.outputs.prep_dir,
+        "train_dir": train_step.outputs.train_dir,
+        "metrics": train_step.outputs.metrics,
+        "best_dir": tune_step.outputs.best_dir,
+        "model_info": reg_step.outputs.model_info,
     }
 
 # ----------------------------
-# 5) Submit and export small JSONs for CI
+# 5) Submit Pipeline
 # ----------------------------
-if __name__ == "__main__":
-    print("Submitting Auto Pricing pipeline to Azure ML ...")
-    pipeline_job = auto_pricing_pipeline()
-    pipeline_job = ml_client.jobs.create_or_update(
-        pipeline_job,
-        experiment_name="auto-pricing-e2e",
-    )
-    print(f"Submitted pipeline job: {pipeline_job.name}")
+pipeline_job = auto_pricing_pipeline(data_path=Input(path="data/used_cars.csv", type="uri_file"))
+pipeline_job = ml_client.jobs.create_or_update(pipeline_job)
+print(f"✅ Pipeline submitted successfully! Job name: {pipeline_job.name}")
 
-    # Stream logs & wait to finish
-    try:
-        ml_client.jobs.stream(pipeline_job.name)
-    except Exception as e:
-        print(f"Stream failed (continuing): {e}")
-
-    # Write a lightweight run_info.json for the CI summary
-    with open("run_info.json", "w") as f:
-        json.dump({"job_name": pipeline_job.name}, f, indent=2)
-
-    # Download the two tiny single-file outputs into the workspace
-    # They’ll be placed under ./azureml/{output_name}/...
-    out_dir = Path(".").resolve()
-
-    def _download_single(output_name: str, dest_name: str):
-        try:
-            ml_client.jobs.download(
-                name=pipeline_job.name,
-                output_name=output_name,
-                download_path=str(out_dir),
-                overwrite=True,
-            )
-            # AzureML writes to ./<output_name>/ (file keeps its original filename)
-            # Find the first file and copy it to the expected CI filename.
-            root = out_dir / output_name
-            if root.exists():
-                # Grab the first file inside (there should be exactly one for uri_file)
-                for p in root.rglob("*"):
-                    if p.is_file():
-                        shutil.copy2(p, out_dir / dest_name)
-                        print(f"Wrote {dest_name} from {p}")
-                        return True
-            print(f"{output_name} not found or empty")
-            return False
-        except Exception as e:
-            print(f"Failed to download {output_name}: {e}")
-            return False
-
-    _download_single("metrics",    "metrics.json")
-    _download_single("model_info", "model_info.json")
-
-    print("Done.")
