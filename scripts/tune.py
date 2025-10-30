@@ -1,42 +1,31 @@
-#!/usr/bin/env python3
-"""
-Hyperparameter tuning step for the Auto Pricing pipeline.
-
-- Uses Azure ML job context for MLflow (no set_experiment needed)
-- Runs a small Ridge regression grid search
-- Logs params/metrics to MLflow tracking in the AML workspace
-- Saves the best model to --output_dir/best_model.pkl for downstream steps
-"""
+# scripts/tune.py  (FULL REPLACEMENT)
 
 import argparse
+import json
 import os
 from pathlib import Path
-import joblib
-import numpy as np
+
 import pandas as pd
-
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.linear_model import Ridge
+import numpy as np
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
+import joblib
 
-# ---- Azure ML / MLflow tracking (Azure-ML compatible) ----
-from azureml.core import Run
-import mlflow
-
-run = Run.get_context()  # works in AML job, falls back to offline in local runs
-# Point MLflow to the AML workspace tracking server
-mlflow.set_tracking_uri(run.experiment.workspace.get_mlflow_tracking_uri())
-# Start an MLflow run tied to this AML job
-mlflow.start_run(run_id=run.id)
+# Defensive MLflow import for AzureML context
+try:
+    from azureml.core import Run
+    import mlflow
+    HAS_AZUREML = True
+except ImportError:
+    HAS_AZUREML = False
 
 
 def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--data_dir", type=str, required=True,
-                   help="Directory containing prepped.csv from the prep step")
-    p.add_argument("--output_dir", type=str, required=True,
-                   help="Directory to write best model artifacts")
-    return p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_dir", type=str, required=True)
+    parser.add_argument("--best_dir", type=str, required=True)
+    return parser.parse_args()
 
 
 def main():
@@ -44,62 +33,48 @@ def main():
 
     data_path = Path(args.data_dir) / "prepped.csv"
     if not data_path.exists():
-        raise FileNotFoundError(f"Could not find input data at: {data_path}")
+        raise FileNotFoundError(f"Missing expected file: {data_path}")
 
-    print(f"[tune] Loading data from: {data_path}")
     df = pd.read_csv(data_path)
-
-    if "price" not in df.columns:
-        raise ValueError("Expected target column 'price' not found in prepped.csv")
-
     X = df.drop(columns=["price"])
     y = df["price"]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    grid = GridSearchCV(
+        RandomForestRegressor(random_state=42),
+        param_grid={"n_estimators": [100, 200], "max_depth": [10, 12, 15]},
+        cv=3, scoring="neg_mean_squared_error", n_jobs=-1, verbose=2
     )
 
-    # ----- Define model & search space -----
-    model = Ridge()
-    param_grid = {"alpha": [0.01, 0.1, 1.0, 10.0, 100.0]}
-    search = GridSearchCV(
-        estimator=model,
-        param_grid=param_grid,
-        scoring="r2",
-        cv=5,
-        n_jobs=-1
-    )
+    grid.fit(X_train, y_train)
+    best_model = grid.best_estimator_
 
-    print("[tune] Starting grid search...")
-    search.fit(X_train, y_train)
-    best_model = search.best_estimator_
+    preds = best_model.predict(X_test)
+    rmse = float(np.sqrt(mean_squared_error(y_test, preds)))
+    r2 = float(r2_score(y_test, preds))
+    metrics = {"rmse": rmse, "r2": r2, **grid.best_params_}
 
-    # ----- Evaluate -----
-    y_pred = best_model.predict(X_test)
-    rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
-    r2 = float(r2_score(y_test, y_pred))
+    print(f"[tune] Best Params: {grid.best_params_}")
+    print(f"[tune] RMSE={rmse:.4f}, R2={r2:.4f}")
 
-    print(f"[tune] Best params: {search.best_params_}")
-    print(f"[tune] RMSE: {rmse:.4f}, R2: {r2:.4f}")
+    # MLflow safe-guarded logging
+    if HAS_AZUREML:
+        run = Run.get_context()
+        mlflow.set_tracking_uri(run.experiment.workspace.get_mlflow_tracking_uri())
+        mlflow.start_run(run_id=run.id)
+        mlflow.log_params(grid.best_params_)
+        mlflow.log_metrics({"rmse": rmse, "r2": r2})
+        mlflow.end_run()
 
-    # ----- Log to MLflow (tracking only; not using registry) -----
-    mlflow.log_param("best_alpha", search.best_params_["alpha"])
-    mlflow.log_metric("rmse", rmse)
-    mlflow.log_metric("r2", r2)
+    best_dir = Path(args.best_dir)
+    best_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(best_model, best_dir / "best_model.pkl")
 
-    # This logs the model to the run’s artifact store (tracking),
-    # not to the model registry (we are NOT passing registered_model_name).
-    mlflow.sklearn.log_model(best_model, artifact_path="model")
+    with open(best_dir / "tuning_summary.json", "w") as f:
+        json.dump(metrics, f, indent=2)
 
-    # ----- Save for downstream pipeline step -----
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    model_path = out_dir / "best_model.pkl"
-    joblib.dump(best_model, model_path)
-    print(f"[tune] Saved best model to: {model_path}")
-
-    mlflow.end_run()
-    print("[tune] Completed successfully.")
+    print("[tune] Completed successfully and artifacts saved.")
 
 
 if __name__ == "__main__":
