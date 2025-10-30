@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  id-token: write        # for azure/login OIDC
+  id-token: write        # Required for Azure OIDC login
   contents: read
   actions: read
 
@@ -21,18 +21,18 @@ jobs:
   build-train-register:
     runs-on: ubuntu-latest
 
-    # Keep infra config in one place; prefer secrets for IDs
     env:
-      AML_SUBSCRIPTION_ID: ${{ secrets.AML_SUBSCRIPTION_ID }}
-      AML_RESOURCE_GROUP:  ${{ secrets.AML_RESOURCE_GROUP }}
-      AML_WORKSPACE_NAME:  ${{ secrets.AML_WORKSPACE_NAME }}
-      AML_COMPUTE_NAME:    ${{ secrets.AML_COMPUTE_NAME }}
-      AML_LOCATION:        ${{ secrets.AML_LOCATION }}
-      # Optional quality gate threshold (example)
+      # Azure workspace settings — update if changed
+      AZURE_SUBSCRIPTION_ID: "f7583458-6f5b-4491-add9-f827568d2957"
+      AZURE_RESOURCE_GROUP: "MSFT-AI-Class"
+      AZURE_ML_WORKSPACE: "MyFirstWorkSpace"
+      AZURE_ML_COMPUTE: "Keith-Compute"
+
+      # Optional: performance threshold for quality gate
       ACC_THRESHOLD: "0.80"
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -44,84 +44,78 @@ jobs:
       - name: Login to Azure (OIDC)
         uses: azure/login@v2
         with:
-          # Prefer Federated Credentials; falls back to JSON if provided
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Install dependencies (pin compatible versions)
         run: |
+          set -e
           python -m pip install --upgrade pip
           pip uninstall -y marshmallow || true
           pip install "marshmallow==3.21.1" "azure-ai-ml==1.14.0"
           pip install mlflow==2.16.0 scikit-learn==1.5.2 pandas==2.2.2 numpy==1.26.4 joblib==1.4.2 matplotlib==3.9.0
           python - <<'PY'
           import marshmallow, azure.ai.ml as aml
-          print("marshmallow:", marshmallow.__version__)
-          print("azure-ai-ml:", aml.__version__)
+          print("✅ marshmallow:", marshmallow.__version__)
+          print("✅ azure-ai-ml:", aml.__version__)
           PY
 
       - name: Submit Azure ML pipeline
         id: submit
+        shell: bash
         run: |
           set -euo pipefail
+          echo "🚀 Submitting Azure ML pipeline..."
           python aml/pipeline.py \
-            --subscription "$AML_SUBSCRIPTION_ID" \
-            --resource-group "$AML_RESOURCE_GROUP" \
-            --workspace "$AML_WORKSPACE_NAME" \
-            --compute "$AML_COMPUTE_NAME" \
-            --location "$AML_LOCATION" \
-            --metrics-out metrics.json \
-            --run-out run_info.json \
-            --model-out model_info.json
+            --subscription "${AZURE_SUBSCRIPTION_ID}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --workspace "${AZURE_ML_WORKSPACE}" \
+            --compute "${AZURE_ML_COMPUTE}" \
+            --experiment-name "auto-pricing-e2e" \
+            --data-asset "azureml:UsedCars:1" \
+            --run-out "run_info.json" \
+            --model-out "model_info.json" \
+            --metrics-out "metrics.json"
 
-      # Optional: enforce a quality gate from metrics.json
       - name: Quality gate
         run: |
+          echo "🧮 Evaluating quality gate..."
           python - <<'PY'
           import json, os, sys
-          thr = float(os.environ.get("ACC_THRESHOLD","0"))
+          thr = float(os.environ.get("ACC_THRESHOLD", "0"))
           try:
             with open("metrics.json") as f:
               m = json.load(f)
           except FileNotFoundError:
-            print("metrics.json not found; failing for safety.")
+            print("❌ metrics.json not found — failing for safety.")
             sys.exit(1)
           acc = float(m.get("accuracy", 0))
-          print(f"Reported accuracy: {acc:.4f} (threshold: {thr:.4f})")
+          print(f"📊 Reported accuracy: {acc:.4f} (threshold: {thr:.4f})")
           if acc < thr:
             print("❌ Quality gate failed.")
             sys.exit(2)
           print("✅ Quality gate passed.")
           PY
 
-      - name: Attach summary
+      - name: Attach run summary
         if: always()
         run: |
-          echo "## Azure ML Run Summary" >> "$GITHUB_STEP_SUMMARY"
-          if [ -f run_info.json ]; then
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat run_info.json >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [ -f model_info.json ]; then
-            echo "### Model" >> "$GITHUB_STEP_SUMMARY"
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat model_info.json >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [ -f metrics.json ]; then
-            echo "### Metrics" >> "$GITHUB_STEP_SUMMARY"
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat metrics.json >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          fi
+          echo "## 🧩 Azure ML Run Summary" >> "$GITHUB_STEP_SUMMARY"
+          for file in run_info.json model_info.json metrics.json; do
+            if [ -f "$file" ]; then
+              echo "### ${file}" >> "$GITHUB_STEP_SUMMARY"
+              echo '```json' >> "$GITHUB_STEP_SUMMARY"
+              cat "$file" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
-      - name: Upload artifacts (run, model, metrics)
+      - name: Upload run artifacts (run, model, metrics)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: aml-run-${{ github.run_id }}
           path: |
-            metrics.json
             run_info.json
             model_info.json
+            metrics.json
           if-no-files-found: ignore
