@@ -94,8 +94,11 @@ reg_job = command(
 # ----------------------------
 # Pipeline Definition
 # ----------------------------
-@dsl.pipeline(description="Auto pricing full MLOps pipeline")
-def auto_pricing_pipeline(data_path: Input, compute: str):
+@dsl.pipeline(
+    description="Auto pricing full MLOps pipeline",
+)
+def auto_pricing_pipeline(data_path: Input):
+
     prep_step = prep_job(data=data_path)
     train_step = train_job(data_dir=prep_step.outputs.prep_dir)
     tune_step = tune_job(data_dir=prep_step.outputs.prep_dir)
