@@ -7,24 +7,29 @@ experiment_name: auto-pricing-e2e
 
 inputs:
   data:
-    type: uri_folder          # will be set from GitHub Actions (@azureml:UsedCars:1)
+    type: uri_folder          # set by workflow: @azureml:UsedCars:1
   compute_target:
-    type: string              # will be set from GitHub Actions (Keith-Compute)
+    type: string              # set by workflow: Keith-Compute
 
 jobs:
   train:
     type: command
     compute: ${{ inputs.compute_target }}
-    code: .
+
+    # IMPORTANT: paths are resolved relative to this YAML (in aml/)
+    code: ..                   # repo root so scripts/train.py is available
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
-      conda_file: env/conda.yml
+      conda_file: ../env/conda.yml
+
     command: >
       python scripts/train.py
       --data ${{inputs.data}}
       --output ${{outputs.model_out}}
+
     inputs:
       data: ${{ inputs.data }}
+
     outputs:
       model_out:
         type: uri_folder
