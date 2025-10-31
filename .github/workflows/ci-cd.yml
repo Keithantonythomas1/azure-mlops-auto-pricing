@@ -108,7 +108,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Select subscription if provided (OIDC path provides it)
+          # Ensure correct subscription
           if [ -n "${SUB_ID:-}" ]; then
             az account set --subscription "$SUB_ID"
           fi
@@ -117,17 +117,23 @@ jobs:
           az account show --query "{name:name,id:id,tenantId:tenantId}" -o table
 
           echo "📤 Submitting job '${AML_JOB_NAME}' ..."
-          JOB_JSON=$(az ml job create \
+          # IMPORTANT: ask for JSON so we can parse it cleanly
+          JOB_JSON="$(az ml job create \
             --file "${AML_PIPELINE_FILE}" \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
             --workspace-name "${AZURE_ML_WORKSPACE}" \
             --name "${AML_JOB_NAME}" \
             --set inputs.data=${AML_INPUT_DATA} \
             --set inputs.compute_target="${AML_COMPUTE}" \
-            --only-show-errors)
+            --only-show-errors \
+            -o json)"
 
-          echo "$JOB_JSON" > job.json
-          echo "job_name=$(python - <<'PY'\nimport json;print(json.load(open('job.json'))['name'])\nPY\n)" >> "$GITHUB_OUTPUT"
+          # Persist and extract name safely (no heredoc)
+          echo "${JOB_JSON}" > job.json
+          JOB_NAME=$(python -c "import json; print(json.load(open('job.json'))['name'])")
+
+          echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
+          echo "✅ Submitted job: ${JOB_NAME}"
 
       # ================= SUMMARY & ARTIFACTS =================
       - name: Post Studio link
