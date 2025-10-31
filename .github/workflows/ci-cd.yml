@@ -1,6 +1,6 @@
 # .github/workflows/ci-cd.yml
 # End-to-end Azure ML CI/CD (v2)
-# ✅ OIDC-first auth, installs ML extension, patches compute via --set (NO invalid bindings)
+# ✅ OIDC-first auth, ML v2 extension, safe step scripts, compute patched via --set
 
 name: aml-mlops-cicd
 on:
@@ -19,8 +19,8 @@ env:
   # ===== Pipeline configuration =====
   AML_PIPELINE_FILE:   aml/pipeline.yml
   AML_JOB_NAME:        auto-pricing-e2e
-  AML_INPUT_DATA:      azureml:UsedCars:1           # dataset in your workspace
-  AML_COMPUTE:         Keith-Compute                # compute cluster name (no spaces)
+  AML_INPUT_DATA:      azureml:UsedCars:1        # dataset in your workspace
+  AML_COMPUTE:         Keith-Compute             # compute cluster name
 
 jobs:
   build-train-register:
@@ -138,17 +138,37 @@ jobs:
           echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
           echo "✅ Job submitted: ${JOB_NAME}"
 
-      # ================= POST-STUDIO SUMMARY =================
+      # ================= POST-STUDIO SUMMARY (fixed) =================
       - name: Post Azure ML Studio link
         shell: bash
         run: |
-          URL=$(az ml job show -n "${{ steps.submit.outputs.job_name }}" \
-                --resource-group "${AZURE_RESOURCE_GROUP}" \
-                --workspace-name "${AZURE_ML_WORKSPACE}" \
-                --query "studio_url || studioUrl" -o tsv)
-          {
-            echo "## ✅ Azure ML Job Submitted"
-            echo "- **Workspace**: ${AZURE_ML_WORKSPACE}"
-            echo "- **Resource Group**: ${AZURE_RESOURCE_GROUP}"
-            echo "- **Region**: ${AZURE_REGION}"
-            echo "- **Job Name**: ${{ steps.submit.outputs.job_name }}"
+          set -euo pipefail
+          JOB="${{ steps.submit.outputs.job_name }}"
+          # capture URL, suppress SDK experimental warnings
+          URL="$(az ml job show \
+                  --name "$JOB" \
+                  --resource-group "${AZURE_RESOURCE_GROUP}" \
+                  --workspace-name "${AZURE_ML_WORKSPACE}" \
+                  --query "coalesce(studio_url, studioUrl)" -o tsv 2>/dev/null || true)"
+          echo "## ✅ Azure ML Job Submitted" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Workspace**: ${AZURE_ML_WORKSPACE}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Resource Group**: ${AZURE_RESOURCE_GROUP}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Region**: ${AZURE_REGION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Job Name**: ${JOB}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Studio Link**: ${URL:-(not available yet)}" >> "$GITHUB_STEP_SUMMARY"
+
+      # ================= ARTIFACT & LOGOUT =================
+      - name: Upload job.json artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aml-job-json
+          path: job.json
+
+      - name: Logout Azure
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          az account show >/dev/null 2>&1 && az logout || echo "No active Azure login; skipping logout."
+          az account clear || true
+          echo "🧹 Azure session cleared."
