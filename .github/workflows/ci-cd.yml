@@ -33,25 +33,32 @@ jobs:
 
 
       # ---------- TOOLS ----------
-      - name: Install Azure ML CLI v2 and dependencies
+      - name: Install/upgrade Azure CLI + ML v2 extension
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "🔹 Cleaning up any old ML CLI extensions..."
-          az extension remove -n azure-cli-ml || true  # remove legacy extension if present
+          echo "🔹 Upgrading Azure CLI to a modern version..."
+          sudo apt-get update
+          # Install Microsoft repo script (safe for GH runners) to get latest az
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
-          echo "🔹 Installing Azure ML CLI v2 extension..."
-          az extension add -n ml -y --upgrade          # ensure the v2 'ml' extension is installed
+          echo "🔹 Removing legacy ML extension if present..."
+          az extension remove -n azure-cli-ml || true   # v1 extension
 
-          echo "🔹 Verifying Azure ML CLI installation..."
-          az ml -v
+          echo "🔹 Installing ML v2 extension..."
+          az extension add -n ml --upgrade -y           # v2 extension
 
-          echo "🔹 Installing Python SDK dependencies..."
+          echo "🔹 Verifying versions..."
+          az version
+          az extension show -n ml
+
+          echo "🔹 Python SDK deps..."
           python -m pip install --upgrade pip
-          pip install "azure-ai-ml>=1.16.0" "azure-identity>=1.16.0"
+          pip install 'azure-ai-ml>=1.16.0' 'azure-identity>=1.16.0'
 
-          echo "✅ Azure ML CLI v2 and dependencies successfully installed."
+          echo "✅ Azure CLI and ML v2 extension ready."
+
 
       # ---------- SUBMIT PIPELINE ----------
       - name: Submit Azure ML pipeline job
