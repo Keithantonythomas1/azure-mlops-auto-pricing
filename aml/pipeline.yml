@@ -24,7 +24,9 @@ jobs:
       python scripts/train.py
       --data ${{inputs.data}}
       --output ${{outputs.model_out}}
-    environment: azureml://registries/azureml/environments/sklearn-1.2/versions/5
+    environment:  
+     image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
+     conda_file: env/conda.yml
     inputs:
       data: ${{ inputs.data }}
     outputs:
@@ -40,7 +42,9 @@ jobs:
   #     python scripts/evaluate.py
   #     --model ${{inputs.model_in}}
   #     --data  ${{inputs.data}}
-  #   environment: azureml://registries/azureml/environments/sklearn-1.2/versions/5
+  #   environment:
+       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
+       conda_file: env/conda.yml
   #   inputs:
   #     model_in: ${{ parent.jobs.train.outputs.model_out }}
   #     data:     ${{ inputs.data }}
