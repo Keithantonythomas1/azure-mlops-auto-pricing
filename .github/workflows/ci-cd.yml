@@ -1,6 +1,6 @@
 # .github/workflows/ci-cd.yml
-# End-to-end Azure ML CI/CD pipeline
-# ✅ OIDC-first auth, Azure CLI v2, unique job names, safe logout
+# End-to-end Azure ML CI/CD (v2)
+# ✅ OIDC-first auth, installs ML extension, patches compute via --set (NO invalid bindings)
 
 name: aml-mlops-cicd
 on:
@@ -19,8 +19,8 @@ env:
   # ===== Pipeline configuration =====
   AML_PIPELINE_FILE:   aml/pipeline.yml
   AML_JOB_NAME:        auto-pricing-e2e
-  AML_INPUT_DATA:      azureml:UsedCars:1
-  AML_COMPUTE:         Keith-Compute
+  AML_INPUT_DATA:      azureml:UsedCars:1           # dataset in your workspace
+  AML_COMPUTE:         Keith-Compute                # compute cluster name (no spaces)
 
 jobs:
   build-train-register:
@@ -59,8 +59,8 @@ jobs:
         if: steps.auth.outputs.mode == 'oidc'
         uses: azure/login@v2
         with:
-          client-id:      ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id:      ${{ secrets.AZURE_TENANT_ID }}
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Ensure Azure login is active
@@ -77,24 +77,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "🔹 Updating Azure CLI..."
+          echo "🔹 Installing/Updating Azure CLI..."
           sudo apt-get update
           curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
-          echo "🔹 Removing legacy ML extension (if any)..."
+          echo "🔹 Remove legacy ML extension (if any)..."
           az extension remove -n azure-cli-ml || true
 
-          echo "🔹 Installing ML v2 extension..."
+          echo "🔹 Install ML v2 extension..."
           az extension add -n ml --upgrade -y
 
-          echo "🔹 Verifying installation..."
+          echo "🔹 Verify install..."
           az version
           az extension show -n ml
 
-          echo "🔹 Installing SDK dependencies..."
+          echo "🔹 Python deps (SDKs)..."
           python -m pip install --upgrade pip
           pip install "azure-ai-ml>=1.16.0" "azure-identity>=1.16.0"
-
           echo "✅ Azure CLI + ML v2 ready."
 
       # ================= SUBMIT AML PIPELINE =================
@@ -106,7 +105,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "🔹 Validating Azure subscription..."
           if [ -n "${SUB_ID:-}" ]; then
             az account set --subscription "$SUB_ID"
           fi
@@ -114,22 +112,21 @@ jobs:
           echo "🌐 Active context:"
           az account show --query "{Name:name, TenantId:tenantId, SubscriptionId:id}" -o table
 
-          echo "🔹 Generating unique job name..."
+          echo "🔹 Unique job name..."
           BASE="${AML_JOB_NAME:-auto-pricing-e2e}"
           SUFFIX="$(date -u +%y%m%d-%H%M%S)-${GITHUB_RUN_NUMBER:-0}"
           UNIQUE_NAME="$(echo "${BASE}-${SUFFIX}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
-          echo "📛 Using job name: ${UNIQUE_NAME}"
+          echo "📛 ${UNIQUE_NAME}"
 
-          echo "📤 Submitting Azure ML job..."
+          echo "📤 Submitting pipeline..."
           JOB_JSON="$(az ml job create \
             --file "${AML_PIPELINE_FILE}" \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
             --workspace-name "${AZURE_ML_WORKSPACE}" \
             --name "${UNIQUE_NAME}" \
-            --set inputs.data=${AML_INPUT_DATA} \
-            --set inputs.compute_target="${AML_COMPUTE}" \
-            --only-show-errors \
-            -o json)"
+            --set inputs.data="${AML_INPUT_DATA}" \
+                  settings.default_compute="azureml:${AML_COMPUTE}" \
+            --only-show-errors -o json)"
 
           echo "${JOB_JSON}" > job.json
 
@@ -138,9 +135,8 @@ jobs:
           else
             JOB_NAME=$(python -c "import json;print(json.load(open('job.json'))['name'])")
           fi
-
           echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
-          echo "✅ Job submitted successfully: ${JOB_NAME}"
+          echo "✅ Job submitted: ${JOB_NAME}"
 
       # ================= POST-STUDIO SUMMARY =================
       - name: Post Azure ML Studio link
@@ -156,22 +152,3 @@ jobs:
             echo "- **Resource Group**: ${AZURE_RESOURCE_GROUP}"
             echo "- **Region**: ${AZURE_REGION}"
             echo "- **Job Name**: ${{ steps.submit.outputs.job_name }}"
-            echo "- **Studio Link**: ${URL}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # ================= UPLOAD ARTIFACTS =================
-      - name: Upload job.json artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: aml-job-json
-          path: job.json
-
-      # ================= SAFE LOGOUT =================
-      - name: Logout Azure
-        if: always()
-        continue-on-error: true
-        shell: bash
-        run: |
-          az account show >/dev/null 2>&1 && az logout || echo "No active Azure login; skipping logout."
-          az account clear || true
-          echo "🧹 Azure session cleared."
