@@ -1,23 +1,27 @@
-# aml/pipeline.yml — Azure ML CLI v2 pipeline job
+# aml/pipeline.yml — Azure ML pipeline job (v2)
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
+
 name: auto_pricing_pipeline
 display_name: auto_pricing_pipeline
 experiment_name: auto-pricing-e2e
 
+# You can set a placeholder here. The workflow patches the real cluster via --set.
+settings:
+  default_compute: azureml:cpu-cluster     # will be overridden to azureml:Keith-Compute by the Action
+  continue_on_step_failure: false
+
 inputs:
   data:
-    type: uri_folder          # set by workflow: @azureml:UsedCars:1
-  compute_target:
-    type: string              # set by workflow: Keith-Compute
+    type: uri_folder                       # Action sets this to azureml:UsedCars:1
 
 jobs:
   train:
     type: command
-    compute: ${{ inputs.compute_target }}
+    # (optional) leave compute omitted to inherit default_compute
+    # compute: azureml:cpu-cluster
 
-    # IMPORTANT: paths are resolved relative to this YAML (in aml/)
-    code: ..                   # repo root so scripts/train.py is available
+    code: ..
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
       conda_file: ../env/conda.yml
@@ -27,8 +31,9 @@ jobs:
       --data ${{inputs.data}}
       --output ${{outputs.model_out}}
 
+    # In a pipeline, map from the pipeline's inputs using *parent.inputs*
     inputs:
-      data: ${{ inputs.data }}
+      data: ${{ parent.inputs.data }}
 
     outputs:
       model_out:
