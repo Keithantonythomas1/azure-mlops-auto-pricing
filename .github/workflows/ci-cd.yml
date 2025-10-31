@@ -1,65 +1,89 @@
+# .github/workflows/ci-cd.yml
+# End-to-end replacement: OIDC-first auth, AML CLI v2, submit pipeline with data + compute,
+# Studio link in summary, safe logout.
+
 name: aml-mlops-cicd
 on:
   workflow_dispatch:
 
 permissions:
-  id-token: write    # required for OIDC
+  id-token: write
   contents: read
 
 env:
-  # Azure resource context (from your screenshots)
+  # ==== Your Azure resources ====
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE:  MyFirstWorkSpace
   AZURE_REGION:        eastus
+
+  # ==== Pipeline config ====
   AML_PIPELINE_FILE:   pipelines/pipeline.yml
   AML_JOB_NAME:        auto-pricing-e2e
   AML_INPUT_DATA:      '@azureml:UsedCars:1'
-  AML_COMPUTE:         Keith-Compute
+  AML_COMPUTE:         Keith-Compute  # your cluster
 
 jobs:
   build-train-register:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # ---------- AUTH (OIDC) ----------
-      - name: Login to Azure (OIDC)
+      # ================= AUTH (OIDC-first, SP fallback) =================
+      - name: Select auth mode
+        id: auth
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.AZURE_CREDENTIALS }}" ]; then
+            echo "mode=sp" >> "$GITHUB_OUTPUT"
+            echo "Using Service Principal (AZURE_CREDENTIALS present)."
+          else
+            echo "mode=oidc" >> "$GITHUB_OUTPUT"
+            echo "Using OIDC (recommended)."
+          fi
+
+      - name: Azure login (Service Principal)
+        if: steps.auth.outputs.mode == 'sp'
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # ---------- CLI & SDK ----------
-      - name: Install Azure ML CLI v2 and dependencies
+      - name: Azure login (OIDC)
+        if: steps.auth.outputs.mode == 'oidc'
+        uses: azure/login@v2
+        with:
+          client-id:      ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:      ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id:${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify Azure context
+        run: az account show --query "{name:name,id:id,tenantId:tenantId}" -o table
+
+      # ================= TOOLS =================
+      - name: Install Azure ML CLI v2 and deps
         run: |
           set -euo pipefail
-          az extension remove -n azure-cli-ml || true   # remove legacy v1 if present
-          az extension add -n ml -y                     # add CLI v2
+          az extension remove -n azure-cli-ml || true     # remove legacy v1 ext
+          az extension add -n ml -y                       # add v2
           az configure --defaults location=${AZURE_REGION}
           az ml -v
           python -m pip install --upgrade pip
           pip install "azure-ai-ml>=1.16" "azure-identity>=1.16"
 
-      # ---------- SUBMIT PIPELINE JOB ----------
-      - name: Submit Azure ML job (CLI v2)
+      # ================= SUBMIT PIPELINE =================
+      - name: Submit Azure ML pipeline job
         id: submit
         shell: bash
         run: |
           set -euo pipefail
+          echo "Submitting job '${AML_JOB_NAME}' to ${AZURE_ML_WORKSPACE} in ${AZURE_RESOURCE_GROUP}"
 
-          # Optional: show context for quick troubleshooting
-          echo "Using subscription: ${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-          az account show --query "{name:name, id:id, tenantId:tenantId}" -o table
-
-          # Submit pipeline with inputs wired for data + compute
           JOB_JSON=$(az ml job create \
             --file "${AML_PIPELINE_FILE}" \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
@@ -72,11 +96,7 @@ jobs:
           echo "$JOB_JSON" > job.json
           echo "job_name=$(python - <<'PY'\nimport json;print(json.load(open('job.json'))['name'])\nPY\n)" >> "$GITHUB_OUTPUT"
 
-      # ---------- OPTIONAL QUALITY GATE ----------
-      - name: Quality gate (temporarily relaxed)
-        run: echo "Quality gate placeholder — pass"
-
-      # ---------- SUMMARY & ARTIFACTS ----------
+      # ================= SUMMARY + ARTIFACTS =================
       - name: Post Studio link
         run: |
           URL=$(az ml job show -n "${{ steps.submit.outputs.job_name }}" \
@@ -92,12 +112,16 @@ jobs:
             echo "- **Studio link**: ${URL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload run artifacts
+      - name: Upload job json
         uses: actions/upload-artifact@v4
         with:
           name: aml-job-json
           path: job.json
 
+      # ================= SAFE LOGOUT =================
       - name: Logout Azure
         if: always()
-        run: az logout
+        continue-on-error: true
+        run: |
+          az account show >/dev/null 2>&1 && az logout || echo "No active Azure login; skipping logout."
+
