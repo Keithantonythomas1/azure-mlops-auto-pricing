@@ -11,16 +11,15 @@ permissions:
   contents: read
 
 env:
-  # ===== Your Azure resources =====
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE:  MyFirstWorkSpace
   AZURE_REGION:        eastus
 
-  # ===== Pipeline config =====
-  AML_PIPELINE_FILE:   pipelines/pipeline.yml
+  AML_PIPELINE_FILE:   aml/pipeline.yml     # <-- fixed path
   AML_JOB_NAME:        auto-pricing-e2e
   AML_INPUT_DATA:      '@azureml:UsedCars:1'
   AML_COMPUTE:         Keith-Compute
+
 
 jobs:
   build-train-register:
