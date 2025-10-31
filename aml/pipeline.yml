@@ -1,4 +1,4 @@
-# pipelines/pipeline.yml  — Azure ML CLI v2 pipeline job
+# aml/pipeline.yml — Azure ML CLI v2 pipeline job
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
 name: auto_pricing_pipeline
@@ -7,42 +7,52 @@ experiment_name: auto-pricing-e2e
 
 # Pipeline-level inputs
 inputs:
-  # If your data asset is a versioned Azure ML asset, you can wire it here
-  # or keep setting it from GitHub Actions with --set inputs.data='@azureml:UsedCars:1'
   data:
-    type: uri_folder
-    path: azureml:UsedCars:1
+    type: uri_folder         # set by workflow: @azureml:UsedCars:1
+  compute_target:
+    type: string             # set by workflow: Keith-Compute
 
-# Optional: collect outputs at the pipeline level if you want to bind between steps
+# Optional outputs at pipeline level
 outputs: {}
 
-# ---- Jobs (replace component file paths with yours) ----
 jobs:
-
   train:
     type: command
-    component: file:./components/train.yml
-    # ✅ Explicit compute, replacing any `${{ parent.compute }}`
-    compute: azureml:Keith-Compute
+    compute: ${{ inputs.compute_target }}
+    code: .
+    command: >
+      python scripts/train.py
+      --data ${{inputs.data}}
+      --output ${{outputs.model_out}}
+    environment: azureml://registries/azureml/environments/sklearn-1.2/versions/5
     inputs:
-      # ✅ Valid binding: parent.inputs
-      data: ${{ parent.inputs.data }}
+      data: ${{ inputs.data }}
     outputs:
       model_out:
-        type: mlflow_model
+        type: uri_folder
 
-  evaluate:
-    type: command
-    component: file:./components/evaluate.yml
-    compute: azureml:Keith-Compute
-    inputs:
-      model_in: ${{ parent.jobs.train.outputs.model_out }}
-      data: ${{ parent.inputs.data }}
+  # Example evaluate step (optional; comment out if not used)
+  # evaluate:
+  #   type: command
+  #   compute: ${{ inputs.compute_target }}
+  #   code: .
+  #   command: >
+  #     python scripts/evaluate.py
+  #     --model ${{inputs.model_in}}
+  #     --data  ${{inputs.data}}
+  #   environment: azureml://registries/azureml/environments/sklearn-1.2/versions/5
+  #   inputs:
+  #     model_in: ${{ parent.jobs.train.outputs.model_out }}
+  #     data:     ${{ inputs.data }}
 
-  register:
-    type: command
-    component: file:./components/register.yml
-    compute: azureml:Keith-Compute
-    inputs:
-      model_in: ${{ parent.jobs.train.outputs.model_out }}
-
+  # Example register step (optional; comment out if not used)
+  # register:
+  #   type: command
+  #   compute: ${{ inputs.compute_target }}
+  #   code: .
+  #   command: >
+  #     python scripts/register.py
+  #     --model ${{inputs.model_in}}
+  #   environment: azureml://registries/azureml/environments/sklearn-1.2/versions/5
+  #   inputs:
+  #     model_in: ${{ parent.jobs.train.outputs.model_out }}
