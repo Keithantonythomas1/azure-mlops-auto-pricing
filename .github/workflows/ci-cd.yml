@@ -1,7 +1,3 @@
-# .github/workflows/ci-cd.yml
-# End-to-end replacement: OIDC-first auth, AML CLI v2, submit pipeline with data + compute,
-# Studio link in summary, safe logout.
-
 name: aml-mlops-cicd
 on:
   workflow_dispatch:
@@ -11,16 +7,16 @@ permissions:
   contents: read
 
 env:
-  # ==== Your Azure resources ====
+  # Azure resources (from your portal screenshots)
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE:  MyFirstWorkSpace
   AZURE_REGION:        eastus
 
-  # ==== Pipeline config ====
+  # Pipeline config
   AML_PIPELINE_FILE:   pipelines/pipeline.yml
   AML_JOB_NAME:        auto-pricing-e2e
   AML_INPUT_DATA:      '@azureml:UsedCars:1'
-  AML_COMPUTE:         Keith-Compute  # your cluster
+  AML_COMPUTE:         Keith-Compute
 
 jobs:
   build-train-register:
@@ -35,7 +31,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      # ================= AUTH (OIDC-first, SP fallback) =================
+      # ---------- AUTH (OIDC first, SP fallback) ----------
       - name: Select auth mode
         id: auth
         shell: bash
@@ -65,25 +61,23 @@ jobs:
       - name: Verify Azure context
         run: az account show --query "{name:name,id:id,tenantId:tenantId}" -o table
 
-      # ================= TOOLS =================
+      # ---------- TOOLS ----------
       - name: Install Azure ML CLI v2 and deps
         run: |
           set -euo pipefail
-          az extension remove -n azure-cli-ml || true     # remove legacy v1 ext
-          az extension add -n ml -y                       # add v2
+          az extension remove -n azure-cli-ml || true
+          az extension add -n ml -y
           az configure --defaults location=${AZURE_REGION}
           az ml -v
           python -m pip install --upgrade pip
           pip install "azure-ai-ml>=1.16" "azure-identity>=1.16"
 
-      # ================= SUBMIT PIPELINE =================
+      # ---------- SUBMIT PIPELINE ----------
       - name: Submit Azure ML pipeline job
         id: submit
         shell: bash
         run: |
           set -euo pipefail
-          echo "Submitting job '${AML_JOB_NAME}' to ${AZURE_ML_WORKSPACE} in ${AZURE_RESOURCE_GROUP}"
-
           JOB_JSON=$(az ml job create \
             --file "${AML_PIPELINE_FILE}" \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
@@ -92,11 +86,10 @@ jobs:
             --set inputs.data=${AML_INPUT_DATA} \
             --set inputs.compute_target="${AML_COMPUTE}" \
             --only-show-errors)
-
           echo "$JOB_JSON" > job.json
           echo "job_name=$(python - <<'PY'\nimport json;print(json.load(open('job.json'))['name'])\nPY\n)" >> "$GITHUB_OUTPUT"
 
-      # ================= SUMMARY + ARTIFACTS =================
+      # ---------- SUMMARY & ARTIFACTS ----------
       - name: Post Studio link
         run: |
           URL=$(az ml job show -n "${{ steps.submit.outputs.job_name }}" \
@@ -112,16 +105,15 @@ jobs:
             echo "- **Studio link**: ${URL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload job json
+      - name: Upload job.json
         uses: actions/upload-artifact@v4
         with:
           name: aml-job-json
           path: job.json
 
-      # ================= SAFE LOGOUT =================
+      # ---------- SAFE LOGOUT ----------
       - name: Logout Azure
         if: always()
         continue-on-error: true
         run: |
           az account show >/dev/null 2>&1 && az logout || echo "No active Azure login; skipping logout."
-
