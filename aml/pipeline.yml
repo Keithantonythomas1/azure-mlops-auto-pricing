@@ -5,58 +5,26 @@ name: auto_pricing_pipeline
 display_name: auto_pricing_pipeline
 experiment_name: auto-pricing-e2e
 
-# Pipeline-level inputs
 inputs:
   data:
-    type: uri_folder         # set by workflow: @azureml:UsedCars:1
+    type: uri_folder          # will be set from GitHub Actions (@azureml:UsedCars:1)
   compute_target:
-    type: string             # set by workflow: Keith-Compute
-
-# Optional outputs at pipeline level
-outputs: {}
+    type: string              # will be set from GitHub Actions (Keith-Compute)
 
 jobs:
   train:
     type: command
     compute: ${{ inputs.compute_target }}
     code: .
+    environment:
+      image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
+      conda_file: env/conda.yml
     command: >
       python scripts/train.py
       --data ${{inputs.data}}
       --output ${{outputs.model_out}}
-    environment:  
-     image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
-     conda_file: env/conda.yml
     inputs:
       data: ${{ inputs.data }}
     outputs:
       model_out:
         type: uri_folder
-
-  # Example evaluate step (optional; comment out if not used)
-  # evaluate:
-  #   type: command
-  #   compute: ${{ inputs.compute_target }}
-  #   code: .
-  #   command: >
-  #     python scripts/evaluate.py
-  #     --model ${{inputs.model_in}}
-  #     --data  ${{inputs.data}}
-  #   environment:
-       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
-       conda_file: env/conda.yml
-  #   inputs:
-  #     model_in: ${{ parent.jobs.train.outputs.model_out }}
-  #     data:     ${{ inputs.data }}
-
-  # Example register step (optional; comment out if not used)
-  # register:
-  #   type: command
-  #   compute: ${{ inputs.compute_target }}
-  #   code: .
-  #   command: >
-  #     python scripts/register.py
-  #     --model ${{inputs.model_in}}
-  #   environment: azureml://registries/azureml/environments/sklearn-1.2/versions/5
-  #   inputs:
-  #     model_in: ${{ parent.jobs.train.outputs.model_out }}
