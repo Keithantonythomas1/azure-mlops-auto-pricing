@@ -1,25 +1,20 @@
-# ci-cd.yml — Block replacement (Azure ML CLI v2)
-
 name: aml-mlops-cicd
 on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write    # required for OIDC
   contents: read
 
 env:
-  # Provide these via GitHub Secrets
-  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-  AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
-  AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
-  AZURE_RESOURCE_GROUP:  ${{ secrets.AZURE_RESOURCE_GROUP }}
-  AZURE_ML_WORKSPACE:    ${{ secrets.AZURE_ML_WORKSPACE }}
-
-  # Pipeline config
-  AML_PIPELINE_FILE: pipelines/pipeline.yml
-  AML_JOB_NAME: auto-pricing-e2e
-  AML_INPUT_DATA: '@azureml:UsedCars:1'   # was --data-asset in v1; now set as input
+  # Azure resource context (from your screenshots)
+  AZURE_RESOURCE_GROUP: MSFT-AI-Class
+  AZURE_ML_WORKSPACE:  MyFirstWorkSpace
+  AZURE_REGION:        eastus
+  AML_PIPELINE_FILE:   pipelines/pipeline.yml
+  AML_JOB_NAME:        auto-pricing-e2e
+  AML_INPUT_DATA:      '@azureml:UsedCars:1'
+  AML_COMPUTE:         Keith-Compute
 
 jobs:
   build-train-register:
@@ -34,49 +29,68 @@ jobs:
         with:
           python-version: '3.10'
 
+      # ---------- AUTH (OIDC) ----------
       - name: Login to Azure (OIDC)
         uses: azure/login@v2
         with:
-          client-id: ${{ env.AZURE_CLIENT_ID }}
-          tenant-id: ${{ env.AZURE_TENANT_ID }}
-          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # ---------- CLI & SDK ----------
       - name: Install Azure ML CLI v2 and dependencies
         run: |
+          set -euo pipefail
           az extension remove -n azure-cli-ml || true   # remove legacy v1 if present
           az extension add -n ml -y                     # add CLI v2
+          az configure --defaults location=${AZURE_REGION}
           az ml -v
           python -m pip install --upgrade pip
           pip install "azure-ai-ml>=1.16" "azure-identity>=1.16"
 
+      # ---------- SUBMIT PIPELINE JOB ----------
       - name: Submit Azure ML job (CLI v2)
         id: submit
         shell: bash
         run: |
           set -euo pipefail
-          az account set --subscription "${AZURE_SUBSCRIPTION_ID}"
 
-          # Submit job (replaces old: az ml pipeline submit --experiment-name ... --data-asset ...)
+          # Optional: show context for quick troubleshooting
+          echo "Using subscription: ${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          az account show --query "{name:name, id:id, tenantId:tenantId}" -o table
+
+          # Submit pipeline with inputs wired for data + compute
           JOB_JSON=$(az ml job create \
             --file "${AML_PIPELINE_FILE}" \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
             --workspace-name "${AZURE_ML_WORKSPACE}" \
             --name "${AML_JOB_NAME}" \
             --set inputs.data=${AML_INPUT_DATA} \
+            --set inputs.compute_target="${AML_COMPUTE}" \
             --only-show-errors)
 
           echo "$JOB_JSON" > job.json
           echo "job_name=$(python - <<'PY'\nimport json;print(json.load(open('job.json'))['name'])\nPY\n)" >> "$GITHUB_OUTPUT"
 
+      # ---------- OPTIONAL QUALITY GATE ----------
       - name: Quality gate (temporarily relaxed)
         run: echo "Quality gate placeholder — pass"
 
-      - name: Attach run summary
+      # ---------- SUMMARY & ARTIFACTS ----------
+      - name: Post Studio link
         run: |
-          echo "## Azure ML Job Submitted" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Workspace**: ${AZURE_ML_WORKSPACE}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Resource Group**: ${AZURE_RESOURCE_GROUP}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Job Name**: ${{ steps.submit.outputs.job_name }}" >> "$GITHUB_STEP_SUMMARY"
+          URL=$(az ml job show -n "${{ steps.submit.outputs.job_name }}" \
+                --resource-group "${AZURE_RESOURCE_GROUP}" \
+                --workspace-name "${AZURE_ML_WORKSPACE}" \
+                --query "studio_url || studioUrl" -o tsv)
+          {
+            echo "## Azure ML Job Submitted"
+            echo "- **Workspace**: ${AZURE_ML_WORKSPACE}"
+            echo "- **Resource Group**: ${AZURE_RESOURCE_GROUP}"
+            echo "- **Region**: ${AZURE_REGION}"
+            echo "- **Job Name**: ${{ steps.submit.outputs.job_name }}"
+            echo "- **Studio link**: ${URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload run artifacts
         uses: actions/upload-artifact@v4
@@ -87,4 +101,3 @@ jobs:
       - name: Logout Azure
         if: always()
         run: az logout
-
