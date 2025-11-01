@@ -6,35 +6,40 @@ name: auto_pricing_pipeline
 display_name: auto_pricing_pipeline
 experiment_name: auto-pricing-e2e
 
-# You can set a placeholder here. The workflow patches the real cluster via --set.
+# The GitHub Action patches this to azureml:Keith-Compute at submit time.
 settings:
-  default_compute: azureml:cpu-cluster     # will be overridden to azureml:Keith-Compute by the Action
+  default_compute: azureml:cpu-cluster
   continue_on_step_failure: false
 
 inputs:
   data:
-    type: uri_folder                       # Action sets this to azureml:UsedCars:1
+    type: uri_folder   # The Action sets this to azureml:UsedCars:1
 
 jobs:
   train:
     type: command
-    # (optional) leave compute omitted to inherit default_compute
-    # compute: azureml:cpu-cluster
 
+    # Use repo root so scripts/ is available
     code: ..
+
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
       conda_file: ../env/conda.yml
 
+    # 🔧 Call train.py with the flags it actually requires
     command: >
       python scripts/train.py
-      --data ${{inputs.data}}
-      --output ${{outputs.model_out}}
+      --data_dir ${{ inputs.data }}
+      --train_dir ${{ outputs.model_dir }}
+      --metrics   ${{ outputs.metrics }}
 
-    # In a pipeline, map from the pipeline's inputs using *parent.inputs*
+    # In a pipeline job, map inputs from the pipeline scope using parent.inputs.*
     inputs:
       data: ${{ parent.inputs.data }}
 
+    # Declare outputs your script writes to
     outputs:
-      model_out:
-        type: uri_folder
+      model_dir:
+        type: uri_folder  # directory where the trained model is saved
+      metrics:
+        type: uri_file    # path to a metrics file like metrics.json
