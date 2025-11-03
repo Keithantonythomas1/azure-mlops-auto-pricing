@@ -98,11 +98,7 @@ jobs:
             -o json --only-show-errors)"
 
           echo "${JOB_JSON}" > job.json
-          JOB_NAME=$(python - << 'PY'
-import json
-print(json.load(open('job.json'))['name'])
-PY
-)
+          JOB_NAME=$(python -c "import json; print(json.load(open('job.json'))['name'])")
           echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Post Azure ML Studio link
