@@ -99,21 +99,32 @@ jobs:
           JOB_NAME=$(python -c "import json; print(json.load(open('job.json'))['name'])")
           echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
 
-      # ✅ Option A — One-liner: Get the Azure ML Studio link immediately
+      # ✅ Retrieve Studio URL (fallback without coalesce())
       - name: Retrieve Azure ML Studio link
         shell: bash
         run: |
+          set -euo pipefail
           JOB="${{ steps.submit.outputs.job_name }}"
           echo "🔗 Fetching Studio URL for Job: $JOB"
-          URL=$(az ml job show \
-            --name "$JOB" \
-            --resource-group "${AZURE_RESOURCE_GROUP}" \
-            --workspace-name "${AZURE_ML_WORKSPACE}" \
-            --query "coalesce(studio_url, studioUrl)" -o tsv)
+
+          URL="$(az ml job show \
+                  --name "$JOB" \
+                  --resource-group "${AZURE_RESOURCE_GROUP}" \
+                  --workspace-name "${AZURE_ML_WORKSPACE}" \
+                  --query 'studio_url' -o tsv 2>/dev/null || true)"
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            URL="$(az ml job show \
+                    --name "$JOB" \
+                    --resource-group "${AZURE_RESOURCE_GROUP}" \
+                    --workspace-name "${AZURE_ML_WORKSPACE}" \
+                    --query 'studioUrl' -o tsv 2>/dev/null || true)"
+          fi
+
           echo "## ✅ Azure ML Job Submitted" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Job**: ${JOB}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Studio Link**: ${URL}" >> "$GITHUB_STEP_SUMMARY"
-          echo "🎯 Studio Link: ${URL}"
+          echo "- **Studio Link**: ${URL:-not available yet}" >> "$GITHUB_STEP_SUMMARY"
+          echo "🎯 Studio Link: ${URL:-not available yet}"
 
       - name: Upload job.json artifact
         uses: actions/upload-artifact@v4
