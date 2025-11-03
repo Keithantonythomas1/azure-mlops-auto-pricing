@@ -7,17 +7,18 @@ settings:
   default_compute: azureml:Keith-Compute
   continue_on_step_failure: false
 
-# Only the dataset is a pipeline input; pass the rest as literals.
 inputs:
   data:
-    type: uri_file       # this matches your azureml:UsedCars:1 data asset
+    type: uri_file  # your data asset azureml:UsedCars:1 will be bound to this
 
 jobs:
   train:
     type: command
-    code: .
+    # IMPORTANT: make repo root the code context (pipeline.yml is under aml/)
+    code: ..
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
+      # Path is relative to the code context above (repo root)
       conda_file: aml/conda.yml
     command: >-
       python scripts/train.py
@@ -35,7 +36,7 @@ jobs:
 
   register:
     type: command
-    code: .
+    code: ..
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
       conda_file: aml/conda.yml
