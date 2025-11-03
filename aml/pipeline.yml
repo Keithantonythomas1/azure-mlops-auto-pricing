@@ -1,5 +1,6 @@
 # aml/pipeline.yml
-# Pipeline: train -> register, using a single-file (uri_file) dataset
+# TRAIN -> REGISTER (component path fixed)
+
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
 
@@ -7,14 +8,13 @@ name: auto_pricing_pipeline
 display_name: auto_pricing_pipeline
 experiment_name: auto-pricing-e2e
 
-# Patched at submit time: settings.default_compute = Keith-Compute
 settings:
-  default_compute: azureml:cpu-cluster
+  default_compute: azureml:cpu-cluster   # patched to Keith-Compute at submit time
   continue_on_step_failure: false
 
 inputs:
   data:
-    type: uri_file     # <-- your UsedCars asset is uri_file
+    type: uri_file
 
 jobs:
   train:
@@ -36,6 +36,6 @@ jobs:
 
   register:
     type: command
-    component: file:aml/register.yaml
+    component: file:register.yaml   # path is relative to aml/
     inputs:
       model_path: ${{ jobs.train.outputs.model_dir }}
