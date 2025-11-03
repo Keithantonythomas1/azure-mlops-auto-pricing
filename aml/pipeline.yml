@@ -5,30 +5,21 @@ name: auto_pricing_pipeline
 display_name: auto_pricing_pipeline
 experiment_name: auto-pricing-e2e
 
-# -------- Pipeline inputs (set from GitHub Action via --set) --------
+# NOTE:
+# - We rely on settings.default_compute (set by your GitHub Action with --set)
+# - No 'compute_target' primitive input is used.
+
 inputs:
   data:
-    # Your UsedCars asset is a single CSV file, so uri_file is appropriate.
-    # (uri_folder also works if your script can handle folders.)
+    # Your UsedCars asset is a single CSV file
     type: uri_file
-  compute_target:
-    type: string
-
-# -------- Optional pipeline-level outputs (uncomment if you want an artifact at the pipeline level) --------
-# outputs:
-#   model_dir:
-#     type: uri_folder
-#     mode: rw_mount
 
 jobs:
-  # ===========================
-  # 1) TRAIN
-  # ===========================
+  # ========= 1) TRAIN =========
   train:
     type: command
-    compute: ${{ inputs.compute_target }}
 
-    # Paths are resolved relative to this YAML file. ".." is repo root.
+    # Paths resolved relative to this YAML (repo root is ..)
     code: ..
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
@@ -40,27 +31,22 @@ jobs:
       --output ${{outputs.model_dir}}
 
     inputs:
-      data: ${{ inputs.data }}
+      data: ${{ parent.inputs.data }}
 
     outputs:
-      # model_dir will contain your trained model artifacts
       model_dir:
         type: uri_folder
         mode: rw_mount
 
-  # ===========================
-  # 2) REGISTER (optional)
-  # ===========================
+  # ========= 2) REGISTER =========
   register:
     type: command
-    compute: ${{ inputs.compute_target }}
 
     code: ..
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
       conda_file: ../env/conda.yml
 
-    # NOTE: Correct cross-job reference is *parent.jobs.train.outputs.model_dir*
     inputs:
       trained_model: ${{ parent.jobs.train.outputs.model_dir }}
 
@@ -68,3 +54,4 @@ jobs:
       python scripts/register.py
       --model_dir ${{inputs.trained_model}}
       --model_name auto-pricing-model
+      --description "Auto Pricing model registered from pipeline"
