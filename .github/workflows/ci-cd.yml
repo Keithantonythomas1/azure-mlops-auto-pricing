@@ -1,32 +1,24 @@
-# .github/workflows/ci-cd.yml
-# Train → Register on Azure ML and publish the Studio link
-
 name: aml-mlops-cicd
 
 on:
-  workflow_dispatch: {}
-
-permissions:
-  id-token: write
-  contents: read
+  workflow_dispatch:
 
 env:
-  # ===== Azure resources =====
+  AZURE_REGION: eastus
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE: MyFirstWorkSpace
-  AZURE_REGION: eastus
   AML_COMPUTE: Keith-Compute
-
-  # ===== Pipeline =====
   AML_PIPELINE_FILE: aml/pipeline.yml
-  AML_JOB_NAME: auto-pricing-e2e
+
+  # Dataset asset to use as the pipeline "data" input (edit if your asset name/version differs)
   AML_INPUT_DATA: azureml:UsedCars:1
+
+  # Job base name (a timestamp is appended)
+  AML_JOB_NAME: auto-pricing-e2e
 
 jobs:
   build-train-register:
     runs-on: ubuntu-latest
-    outputs:
-      job_name: ${{ steps.submit.outputs.job_name }}
 
     steps:
       - name: Checkout repository
@@ -37,122 +29,59 @@ jobs:
         with:
           python-version: "3.10"
 
-      # Prefer OIDC (no secret) but fall back to Service Principal if provided
-      - name: Choose auth mode
-        id: auth
-        shell: bash
-        run: |
-          if [ -n "${{ secrets.AZURE_CREDENTIALS }}" ]; then
-            echo "mode=sp" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=oidc" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Azure login (Service Principal)
-        if: steps.auth.outputs.mode == 'sp'
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Azure login (OIDC)
-        if: steps.auth.outputs.mode == 'oidc'
+      - name: Azure CLI login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Verify login
-        shell: bash
-        run: az account show >/dev/null
-
-      - name: Install Azure ML CLI v2
+      - name: Install Azure ML CLI
         shell: bash
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-          az extension remove -n azure-cli-ml || true
-          az extension add -n ml --upgrade -y
-          python -m pip install --upgrade pip
-          pip install "azure-ai-ml>=1.16.0" "azure-identity>=1.16.0"
+          az extension add -n ml -y || az extension update -n ml
+          az configure --defaults group=$AZURE_RESOURCE_GROUP workspace=$AZURE_ML_WORKSPACE location=$AZURE_REGION
 
       - name: Submit Azure ML pipeline job
         id: submit
         shell: bash
-        env:
-          SUB_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
-          set -euo pipefail
-          [ -n "${SUB_ID:-}" ] && az account set --subscription "$SUB_ID" || true
+          TS=$(date +%y%m%d-%H%M%S)
+          NAME="${AML_JOB_NAME}-${TS}"
 
-          BASE="${AML_JOB_NAME:-auto-pricing-e2e}"
-          SUFFIX="$(date -u +%y%m%d-%H%M%S)-${GITHUB_RUN_NUMBER:-0}"
-          NAME="$(echo "${BASE}-${SUFFIX}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
+          # Submit with input binding
+          az ml job create \
+            --file "$AML_PIPELINE_FILE" \
+            --name "$NAME" \
+            --set inputs.data="${AML_INPUT_DATA}"
 
-          JOB_JSON="$(az ml job create \
-            --file "${AML_PIPELINE_FILE}" \
-            --resource-group "${AZURE_RESOURCE_GROUP}" \
-            --workspace-name "${AZURE_ML_WORKSPACE}" \
-            --name "${NAME}" \
-            --set inputs.data="${AML_INPUT_DATA}" \
-                  settings.default_compute="azureml:${AML_COMPUTE}" \
-            -o json --only-show-errors)"
+          echo "job_name=$NAME" >> $GITHUB_OUTPUT
 
-          echo "${JOB_JSON}" > job.json
-          JOB_NAME=$(python -c "import json; print(json.load(open('job.json'))['name'])")
-          echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
-
-      # Poll briefly for studio_url; fall back to a deterministic link if not present
       - name: Retrieve Azure ML Studio link
         shell: bash
         run: |
-          set -euo pipefail
           JOB="${{ steps.submit.outputs.job_name }}"
-          echo "🔗 Fetching Studio URL for Job: $JOB"
+          # Build Studio URL (robust across CLI versions)
+          JOBJSON=$(az ml job show -n "$JOB" -o json)
+          echo "$JOBJSON" | tee aml-job.json >/dev/null
 
-          URL=""
-          for i in {1..12}; do   # ~60s (12 x 5s)
-            URL="$(az ml job show \
-                    --name "$JOB" \
-                    --resource-group "${AZURE_RESOURCE_GROUP}" \
-                    --workspace-name "${AZURE_ML_WORKSPACE}" \
-                    --query 'studio_url' -o tsv 2>/dev/null || true)"
-            if [ -z "$URL" ] || [ "$URL" = "null" ]; then
-              URL="$(az ml job show \
-                      --name "$JOB" \
-                      --resource-group "${AZURE_RESOURCE_GROUP}" \
-                      --workspace-name "${AZURE_ML_WORKSPACE}" \
-                      --query 'studioUrl' -o tsv 2>/dev/null || true)"
-            fi
-            [ -n "$URL" ] && [ "$URL" != "null" ] && break
-            sleep 5
-          done
-
-          if [ -z "${URL:-}" ] || [ "$URL" = "null" ]; then
-            SUB="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-            RG="${AZURE_RESOURCE_GROUP}"
-            WS="${AZURE_ML_WORKSPACE}"
-            EXP="auto-pricing-e2e"   # keep in sync with experiment_name in aml/pipeline.yml
-            URL="https://ml.azure.com/experiments/${EXP}/jobs/${JOB}/overview?wsid=/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.MachineLearningServices/workspaces/${WS}"
-            echo "ℹ️ Using constructed Studio URL."
-          fi
-
-          echo "## ✅ Azure ML Job Submitted" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Job**: ${JOB}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Studio Link**: ${URL}" >> "$GITHUB_STEP_SUMMARY"
-          echo "🎯 Studio Link: ${URL}"
+          # Try to form a Studio link
+          WSID=$(echo "$JOBJSON" | jq -r ".properties.workspaceArmId")
+          SUB=$(echo "$WSID" | awk -F'/' '{print $3}')
+          RG=$(echo "$WSID" | awk -F'/' '{print $5}')
+          WS=$(echo "$WSID" | awk -F'/' '{print $9}')
+          EXP=$(echo "$JOBJSON" | jq -r ".properties.experimentName")
+          echo "Job: $JOB"
+          echo "Studio Link: https://ml.azure.com/experiments/${EXP}/jobs/${JOB}/overview?wsid=/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.MachineLearningServices/workspaces/${WS}"
 
       - name: Upload job.json artifact
         uses: actions/upload-artifact@v4
         with:
           name: aml-job-json
-          path: job.json
+          path: aml-job.json
 
       - name: Logout Azure
         if: always()
-        continue-on-error: true
-        shell: bash
         run: |
-          az account show >/dev/null 2>&1 && az logout || true
+          az logout || true
           az account clear || true
