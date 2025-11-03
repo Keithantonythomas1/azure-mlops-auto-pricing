@@ -9,17 +9,17 @@ settings:
 
 inputs:
   data:
-    type: uri_file  # your data asset azureml:UsedCars:1 will be bound to this
+    type: uri_file  # bound from the workflow: azureml:UsedCars:1
 
 jobs:
   train:
     type: command
-    # IMPORTANT: make repo root the code context (pipeline.yml is under aml/)
+    # pipeline.yml sits in aml/, so '..' makes the repo root the code context
     code: ..
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
-      # Path is relative to the code context above (repo root)
-      conda_file: aml/conda.yml
+      # IMPORTANT: path is relative to *this* YAML's folder (aml/), so just 'conda.yml'
+      conda_file: conda.yml
     command: >-
       python scripts/train.py
       --data ${{inputs.data}}
@@ -39,7 +39,8 @@ jobs:
     code: ..
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
-      conda_file: aml/conda.yml
+      # same fix here
+      conda_file: conda.yml
     command: >-
       python scripts/register.py
       --model_dir ${{inputs.model_dir}}
