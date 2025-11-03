@@ -1,5 +1,5 @@
 # .github/workflows/ci-cd.yml
-# Train → Register → Retrieve Studio Link (Azure ML)
+# Train → Register → Retrieve Studio Link (with retry)
 
 name: aml-mlops-cicd
 
@@ -87,6 +87,7 @@ jobs:
           BASE="${AML_JOB_NAME:-auto-pricing-e2e}"
           SUFFIX="$(date -u +%y%m%d-%H%M%S)-${GITHUB_RUN_NUMBER:-0}"
           NAME="$(echo "${BASE}-${SUFFIX}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
+
           JOB_JSON="$(az ml job create \
             --file "${AML_PIPELINE_FILE}" \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
@@ -95,11 +96,12 @@ jobs:
             --set inputs.data="${AML_INPUT_DATA}" \
                   settings.default_compute="azureml:${AML_COMPUTE}" \
             -o json --only-show-errors)"
+
           echo "${JOB_JSON}" > job.json
           JOB_NAME=$(python -c "import json; print(json.load(open('job.json'))['name'])")
           echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
 
-      # ✅ Retrieve Studio URL (fallback without coalesce())
+      # 🔁 Robust Studio URL fetch: retry for ~2 minutes
       - name: Retrieve Azure ML Studio link
         shell: bash
         run: |
@@ -107,19 +109,23 @@ jobs:
           JOB="${{ steps.submit.outputs.job_name }}"
           echo "🔗 Fetching Studio URL for Job: $JOB"
 
-          URL="$(az ml job show \
-                  --name "$JOB" \
-                  --resource-group "${AZURE_RESOURCE_GROUP}" \
-                  --workspace-name "${AZURE_ML_WORKSPACE}" \
-                  --query 'studio_url' -o tsv 2>/dev/null || true)"
-
-          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+          URL=""
+          for i in {1..24}; do
             URL="$(az ml job show \
                     --name "$JOB" \
                     --resource-group "${AZURE_RESOURCE_GROUP}" \
                     --workspace-name "${AZURE_ML_WORKSPACE}" \
-                    --query 'studioUrl' -o tsv 2>/dev/null || true)"
-          fi
+                    --query 'studio_url' -o tsv 2>/dev/null || true)"
+            if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+              URL="$(az ml job show \
+                      --name "$JOB" \
+                      --resource-group "${AZURE_RESOURCE_GROUP}" \
+                      --workspace-name "${AZURE_ML_WORKSPACE}" \
+                      --query 'studioUrl' -o tsv 2>/dev/null || true)"
+            fi
+            [ -n "$URL" ] && [ "$URL" != "null" ] && break
+            sleep 5
+          done
 
           echo "## ✅ Azure ML Job Submitted" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Job**: ${JOB}" >> "$GITHUB_STEP_SUMMARY"
