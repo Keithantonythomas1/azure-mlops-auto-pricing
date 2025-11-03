@@ -1,35 +1,36 @@
-$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
-display_name: auto_pricing_pipeline
-experiment_name: auto-pricing-e2e
+name: auto_pricing_pipeline
+description: Train a RandomForest on UsedCars and register the model.
 
-# ---------- Inputs (edit target_column if your dataset differs) ----------
+# run everything on your cluster
+settings:
+  default_compute: azureml:Keith-Compute
+
+# pipeline-level inputs (filled from az ml job create --set ...)
 inputs:
   data:
     type: mltable
-    # This is set at submit time from the workflow: env.AML_INPUT_DATA (e.g., azureml:UsedCars:1)
   target_column:
     type: string
-    value: "Price"     # <— change to your dataset's exact column name if needed
   n_estimators:
     type: integer
-    value: 100
   max_depth:
     type: integer
-    value: 10
 
-# ---------- Pipeline jobs ----------
 jobs:
   train:
     type: command
     code: .
     command: >-
-      python scripts/train.py
+      python aml/train.py
       --data ${{inputs.data}}
       --target_column ${{inputs.target_column}}
       --n_estimators ${{inputs.n_estimators}}
       --max_depth ${{inputs.max_depth}}
-      --model_dir ${{outputs.model_dir}}
+      --output_dir ${{outputs.model_dir}}
+    environment:
+      image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
+      conda_file: aml/conda.yml
     inputs:
       data: ${{parent.inputs.data}}
       target_column: ${{parent.inputs.target_column}}
@@ -37,21 +38,18 @@ jobs:
       max_depth: ${{parent.inputs.max_depth}}
     outputs:
       model_dir:
-        type: uri_folder
         mode: rw_mount
-    environment:
-      image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
-      conda_file: aml/conda.yml
+        type: uri_folder
 
   register:
     type: command
     code: .
     command: >-
-      python scripts/register.py
+      python aml/register.py
       --model_dir ${{inputs.model_dir}}
       --model_name auto-pricing-model
-    inputs:
-      model_dir: ${{parent.jobs.train.outputs.model_dir}}
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
       conda_file: aml/conda.yml
+    inputs:
+      model_dir: ${{parent.jobs.train.outputs.model_dir}}
