@@ -1,34 +1,35 @@
-import argparse, os, sys
-from azure.ai.ml import MLClient
+import argparse
+from pathlib import Path
+
 from azure.identity import DefaultAzureCredential
+from azure.ai.ml import MLClient
 from azure.ai.ml.entities import Model
 
+
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model_dir", required=True)
-    ap.add_argument("--model_name", required=True)
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_dir", type=str, required=True)
+    parser.add_argument("--model_name", type=str, default="auto-pricing-model")
+    args = parser.parse_args()
 
-    if not os.path.isdir(args.model_dir):
-        raise FileNotFoundError(f"model_dir not found: {args.model_dir}")
+    model_path = Path(args.model_dir)
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model directory not found: {model_path}")
 
-    # Use federated credentials (OIDC in Actions) or SP if configured
-    cred = DefaultAzureCredential(exclude_interactive_browser_credential=True)
-    mlc = MLClient.from_config(credential=cred)  # uses AML config from job context
+    # In AzureML jobs, DefaultAzureCredential uses the job's managed identity
+    ml_client = MLClient.from_config(credential=DefaultAzureCredential())
 
-    model = Model(
-        name=args.model_name,
-        path=args.model_dir,
-        type="custom_model",          # we saved joblib; keep as custom folder
-        description="Auto pricing model registered by pipeline",
-        tags={"source": "pipeline", "framework": "sklearn"},
+    registered = ml_client.models.create_or_update(
+        Model(
+            name=args.model_name,
+            path=str(model_path),
+            type="custom_model",   # (alternatives: mlflow_model, triton_model)
+            description="RandomForest model for auto pricing",
+            tags={"pipeline": "auto_pricing_pipeline"},
+        )
     )
-    out = mlc.models.create_or_update(model)
-    print(f"✅ Registered model: {out.name} v{out.version}")
+    print(f"Registered model: {registered.name} v{registered.version}")
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"FATAL: {e}", file=sys.stderr)
-        raise
+    main()
