@@ -3,18 +3,25 @@ name: aml-mlops-cicd
 on:
   workflow_dispatch:
 
+# OIDC needs these permissions
+permissions:
+  id-token: write
+  contents: read
+
+# ---- Set your workspace defaults here (edit to match your Azure setup) ----
 env:
-  AZURE_REGION: eastus
-  AZURE_RESOURCE_GROUP: MSFT-AI-Class
-  AZURE_ML_WORKSPACE: MyFirstWorkSpace
-  AML_COMPUTE: Keith-Compute
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_RESOURCE_GROUP:  MSFT-AI-Class
+  AZURE_ML_WORKSPACE:    MyFirstWorkSpace
+  AZURE_REGION:          eastus
+
+  # Your pipeline YAML and params
   AML_PIPELINE_FILE: aml/pipeline.yml
-
-  # Dataset asset to use as the pipeline "data" input (edit if your asset name/version differs)
-  AML_INPUT_DATA: azureml:UsedCars:1
-
-  # Job base name (a timestamp is appended)
-  AML_JOB_NAME: auto-pricing-e2e
+  AML_COMPUTE:       Keith-Compute
+  AML_JOB_NAME:      auto-pricing-e2e
+  AML_INPUT_DATA:    azureml:UsedCars:1
 
 jobs:
   build-train-register:
@@ -24,61 +31,97 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python (for tooling)
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      # -------------------- OIDC LOGIN (RECOMMENDED) --------------------
+      # Make sure you created a Federated Credential for this repo on your app registration,
+      # and added the three secrets: AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID
       - name: Azure CLI login (OIDC)
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Install Azure ML CLI
-        shell: bash
+      - name: Install Azure ML CLI (v2) extension
         run: |
-          az extension add -n ml -y || az extension update -n ml
-          az configure --defaults group=$AZURE_RESOURCE_GROUP workspace=$AZURE_ML_WORKSPACE location=$AZURE_REGION
+          set -euo pipefail
+          az version
+          az extension add -n ml -y || az extension update -n ml -y
 
+      # -------------------- SUBMIT THE PIPELINE JOB --------------------
       - name: Submit Azure ML pipeline job
         id: submit
-        shell: bash
         run: |
-          TS=$(date +%y%m%d-%H%M%S)
-          NAME="${AML_JOB_NAME}-${TS}"
+          set -euo pipefail
+          # Create a unique job name (base + run number)
+          JOB="${AML_JOB_NAME}-e2e-${{ github.run_id }}-${{ github.run_number }}"
+          echo "JOB=$JOB" >> $GITHUB_ENV
 
-          # Submit with input binding
+          echo "Submitting job: $JOB"
+          # Pass parameters/overrides that your pipeline expects
+          # Adjust the --set items to match your pipeline.yml inputs
           az ml job create \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --workspace-name "$AZURE_ML_WORKSPACE" \
             --file "$AML_PIPELINE_FILE" \
-            --name "$NAME" \
-            --set inputs.data="${AML_INPUT_DATA}"
+            --set display_name="$JOB" \
+                  settings.default_compute="$AML_COMPUTE" \
+                  inputs.input_data="$AML_INPUT_DATA" \
+            --query name -o tsv
 
-          echo "job_name=$NAME" >> $GITHUB_OUTPUT
-
+      # -------------------- GET THE STUDIO LINK (robust) --------------------
       - name: Retrieve Azure ML Studio link
-        shell: bash
         run: |
-          JOB="${{ steps.submit.outputs.job_name }}"
-          # Build Studio URL (robust across CLI versions)
-          JOBJSON=$(az ml job show -n "$JOB" -o json)
-          echo "$JOBJSON" | tee aml-job.json >/dev/null
+          set -euo pipefail
+          echo "🔗 Fetching Studio URL for Job: $JOB"
 
-          # Try to form a Studio link
-          WSID=$(echo "$JOBJSON" | jq -r ".properties.workspaceArmId")
-          SUB=$(echo "$WSID" | awk -F'/' '{print $3}')
-          RG=$(echo "$WSID" | awk -F'/' '{print $5}')
-          WS=$(echo "$WSID" | awk -F'/' '{print $9}')
-          EXP=$(echo "$JOBJSON" | jq -r ".properties.experimentName")
-          echo "Job: $JOB"
-          echo "Studio Link: https://ml.azure.com/experiments/${EXP}/jobs/${JOB}/overview?wsid=/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.MachineLearningServices/workspaces/${WS}"
+          # Poll for the Studio link to appear (services.Studio.endpoint)
+          LINK=""
+          for i in {1..60}; do
+            LINK="$(az ml job show \
+              --name "$JOB" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --workspace-name "$AZURE_ML_WORKSPACE" \
+              --query "services.Studio.endpoint" -o tsv || true)"
+            if [ -n "$LINK" ] && [ "$LINK" != "null" ]; then
+              break
+            fi
+            sleep 5
+          done
 
+          if [ -z "$LINK" ] || [ "$LINK" = "null" ]; then
+            LINK="(not available yet)"
+          fi
+
+          echo "STUDIO_LINK=$LINK" >> $GITHUB_ENV
+
+          {
+            echo "## Azure ML Job Submitted"
+            echo ""
+            echo "- **Job:** \`$JOB\`"
+            echo "- **Studio Link:** $LINK"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # -------------------- SAVE JOB JSON AS ARTIFACT --------------------
       - name: Upload job.json artifact
+        run: |
+          set -euo pipefail
+          az ml job show \
+            --name "$JOB" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --workspace-name "$AZURE_ML_WORKSPACE" -o json > aml-job.json
+
+      - name: Publish artifact (aml-job.json)
         uses: actions/upload-artifact@v4
         with:
           name: aml-job-json
           path: aml-job.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Logout Azure
         if: always()
