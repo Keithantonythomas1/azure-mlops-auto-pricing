@@ -1,4 +1,5 @@
-# aml/pipeline.yml — Azure ML pipeline job (v2)
+# aml/pipeline.yml
+# Pipeline: train -> register, using a single-file (uri_file) dataset
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
 
@@ -6,40 +7,35 @@ name: auto_pricing_pipeline
 display_name: auto_pricing_pipeline
 experiment_name: auto-pricing-e2e
 
-# The GitHub Action patches this to azureml:Keith-Compute at submit time.
+# Patched at submit time: settings.default_compute = Keith-Compute
 settings:
   default_compute: azureml:cpu-cluster
   continue_on_step_failure: false
 
 inputs:
   data:
-    type: uri_folder   # The Action sets this to azureml:UsedCars:1
+    type: uri_file     # <-- your UsedCars asset is uri_file
 
 jobs:
   train:
     type: command
-
-    # Use repo root so scripts/ is available
     code: ..
-
     environment:
       image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
       conda_file: ../env/conda.yml
-
-    # 🔧 Call train.py with the flags it actually requires
     command: >
       python scripts/train.py
-      --data_dir ${{ inputs.data }}
+      --data_path ${{ inputs.data }}
       --train_dir ${{ outputs.model_dir }}
       --metrics   ${{ outputs.metrics }}
-
-    # In a pipeline job, map inputs from the pipeline scope using parent.inputs.*
     inputs:
       data: ${{ parent.inputs.data }}
-
-    # Declare outputs your script writes to
     outputs:
-      model_dir:
-        type: uri_folder  # directory where the trained model is saved
-      metrics:
-        type: uri_file    # path to a metrics file like metrics.json
+      model_dir: { type: uri_folder }
+      metrics:   { type: uri_file }
+
+  register:
+    type: command
+    component: file:aml/register.yaml
+    inputs:
+      model_path: ${{ jobs.train.outputs.model_dir }}
