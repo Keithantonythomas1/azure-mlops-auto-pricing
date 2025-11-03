@@ -1,7 +1,10 @@
 # .github/workflows/ci-cd.yml
 # Train → Register → Deploy (online) on Azure ML
+
 name: aml-mlops-cicd
-on: { workflow_dispatch: {} }
+
+on:
+  workflow_dispatch: {}
 
 permissions:
   id-token: write
@@ -10,25 +13,29 @@ permissions:
 env:
   # ===== Azure resources =====
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
-  AZURE_ML_WORKSPACE:  MyFirstWorkSpace
-  AZURE_REGION:        eastus
-  AML_COMPUTE:         Keith-Compute
+  AZURE_ML_WORKSPACE: MyFirstWorkSpace
+  AZURE_REGION: eastus
+  AML_COMPUTE: Keith-Compute
 
-  # ===== Pipeline ========
-  AML_PIPELINE_FILE:   aml/pipeline.yml
-  AML_JOB_NAME:        auto-pricing-e2e
-  AML_INPUT_DATA:      azureml:UsedCars:1        # <- uri_file data asset
+  # ===== Pipeline =====
+  AML_PIPELINE_FILE: aml/pipeline.yml
+  AML_JOB_NAME: auto-pricing-e2e
+  AML_INPUT_DATA: azureml:UsedCars:1   # uri_file data asset
 
 jobs:
   build-train-register:
     runs-on: ubuntu-latest
     outputs:
-      job_name:   ${{ steps.submit.outputs.job_name }}
+      job_name: ${{ steps.submit.outputs.job_name }}
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.10" }
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
       - name: Auth mode
         id: auth
@@ -40,17 +47,18 @@ jobs:
             echo "mode=oidc" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Azure login (SP)
+      - name: Azure login (Service Principal)
         if: steps.auth.outputs.mode == 'sp'
         uses: azure/login@v2
-        with: { creds: ${{ secrets.AZURE_CREDENTIALS }} }
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Azure login (OIDC)
         if: steps.auth.outputs.mode == 'oidc'
         uses: azure/login@v2
         with:
-          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Verify login
@@ -88,9 +96,11 @@ jobs:
             --set inputs.data="${AML_INPUT_DATA}" \
                   settings.default_compute="azureml:${AML_COMPUTE}" \
             -o json --only-show-errors)"
+
           echo "${JOB_JSON}" > job.json
           JOB_NAME=$(python - << 'PY'
-import json; print(json.load(open('job.json'))['name'])
+import json
+print(json.load(open('job.json'))['name'])
 PY
 )
           echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
@@ -108,8 +118,11 @@ PY
           echo "- **Job**: ${JOB}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Link**: ${URL:-(pending)}" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
-        with: { name: aml-job-json, path: job.json }
+      - name: Upload job.json artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aml-job-json
+          path: job.json
 
       - name: Logout Azure
         if: always()
@@ -124,13 +137,14 @@ PY
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
-          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Install Azure ML CLI v2
