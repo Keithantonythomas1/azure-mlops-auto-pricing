@@ -1,5 +1,5 @@
 # .github/workflows/ci-cd.yml
-# Train → Register → Retrieve Studio Link (with retry)
+# Train → Register on Azure ML and publish the Studio link
 
 name: aml-mlops-cicd
 
@@ -37,6 +37,7 @@ jobs:
         with:
           python-version: "3.10"
 
+      # Prefer OIDC (no secret) but fall back to Service Principal if provided
       - name: Choose auth mode
         id: auth
         shell: bash
@@ -84,6 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "${SUB_ID:-}" ] && az account set --subscription "$SUB_ID" || true
+
           BASE="${AML_JOB_NAME:-auto-pricing-e2e}"
           SUFFIX="$(date -u +%y%m%d-%H%M%S)-${GITHUB_RUN_NUMBER:-0}"
           NAME="$(echo "${BASE}-${SUFFIX}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
@@ -101,7 +103,7 @@ jobs:
           JOB_NAME=$(python -c "import json; print(json.load(open('job.json'))['name'])")
           echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
 
-      # 🔁 Robust Studio URL fetch: retry for ~2 minutes
+      # Poll briefly for studio_url; fall back to a deterministic link if not present
       - name: Retrieve Azure ML Studio link
         shell: bash
         run: |
@@ -110,7 +112,7 @@ jobs:
           echo "🔗 Fetching Studio URL for Job: $JOB"
 
           URL=""
-          for i in {1..24}; do
+          for i in {1..12}; do   # ~60s (12 x 5s)
             URL="$(az ml job show \
                     --name "$JOB" \
                     --resource-group "${AZURE_RESOURCE_GROUP}" \
@@ -127,10 +129,19 @@ jobs:
             sleep 5
           done
 
+          if [ -z "${URL:-}" ] || [ "$URL" = "null" ]; then
+            SUB="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            RG="${AZURE_RESOURCE_GROUP}"
+            WS="${AZURE_ML_WORKSPACE}"
+            EXP="auto-pricing-e2e"   # keep in sync with experiment_name in aml/pipeline.yml
+            URL="https://ml.azure.com/experiments/${EXP}/jobs/${JOB}/overview?wsid=/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.MachineLearningServices/workspaces/${WS}"
+            echo "ℹ️ Using constructed Studio URL."
+          fi
+
           echo "## ✅ Azure ML Job Submitted" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Job**: ${JOB}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Studio Link**: ${URL:-not available yet}" >> "$GITHUB_STEP_SUMMARY"
-          echo "🎯 Studio Link: ${URL:-not available yet}"
+          echo "- **Studio Link**: ${URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "🎯 Studio Link: ${URL}"
 
       - name: Upload job.json artifact
         uses: actions/upload-artifact@v4
