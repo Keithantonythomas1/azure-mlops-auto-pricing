@@ -14,7 +14,7 @@ env:
   AZURE_REGION:        eastus
   AML_COMPUTE:         Keith-Compute
 
-  # ===== Pipeline =====
+  # ===== Pipeline ========
   AML_PIPELINE_FILE:   aml/pipeline.yml
   AML_JOB_NAME:        auto-pricing-e2e
   AML_INPUT_DATA:      azureml:UsedCars:1        # <- uri_file data asset
