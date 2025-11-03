@@ -1,4 +1,4 @@
-name: training-env
+name: auto-pricing-env
 channels:
   - conda-forge
   - defaults
@@ -6,8 +6,10 @@ dependencies:
   - python=3.10
   - pip
   - pip:
+      - azure-ai-ml==1.30.0
+      - azure-identity>=1.16.0
+      - scikit-learn==1.4.2
       - pandas==2.2.2
-      - scikit-learn==1.5.2
+      - pyarrow==16.1.0
+      - mltable==1.6.1
       - joblib==1.4.2
-      - pyarrow==17.0.0           # parquet support
-      - mltable==1.*             # to read Azure ML MLTable datasets
