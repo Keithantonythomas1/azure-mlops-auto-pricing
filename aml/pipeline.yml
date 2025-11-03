@@ -1,57 +1,63 @@
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
-
-name: auto_pricing_pipeline
 display_name: auto_pricing_pipeline
 experiment_name: auto-pricing-e2e
 
-# NOTE:
-# - We rely on settings.default_compute (set by your GitHub Action with --set)
-# - No 'compute_target' primitive input is used.
+settings:
+  default_compute: azureml:Keith-Compute
+  continue_on_step_failure: false
 
 inputs:
   data:
-    # Your UsedCars asset is a single CSV file
     type: uri_file
+    mode: ro_mount   # stream the csv
+  target_column:
+    type: string
+    default: price
+  n_estimators:
+    type: integer
+    default: 100
+  max_depth:
+    type: integer
+    default: 10
 
 jobs:
-  # ========= 1) TRAIN =========
   train:
     type: command
-
-    # Paths resolved relative to this YAML (repo root is ..)
-    code: ..
-    environment:
-      image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
-      conda_file: ../env/conda.yml
-
-    command: >
+    code: .
+    command: >-
       python scripts/train.py
       --data ${{inputs.data}}
-      --output ${{outputs.model_dir}}
-
+      --target ${{inputs.target_column}}
+      --n_estimators ${{inputs.n_estimators}}
+      --max_depth ${{inputs.max_depth}}
+      --model_dir ${{outputs.model_dir}}
+      --metrics ${{outputs.metrics}}
+    environment:
+      build:
+        image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
+        conda_file: aml/conda.yml
     inputs:
-      data: ${{ parent.inputs.data }}
-
+      data: ${{parent.inputs.data}}
+      target_column: ${{parent.inputs.target_column}}
+      n_estimators: ${{parent.inputs.n_estimators}}
+      max_depth: ${{parent.inputs.max_depth}}
     outputs:
       model_dir:
-        type: uri_folder
+        mode: rw_mount
+      metrics:
         mode: rw_mount
 
-  # ========= 2) REGISTER =========
   register:
     type: command
-
-    code: ..
-    environment:
-      image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
-      conda_file: ../env/conda.yml
-
-    inputs:
-      trained_model: ${{ parent.jobs.train.outputs.model_dir }}
-
-    command: >
+    code: .
+    command: >-
       python scripts/register.py
-      --model_dir ${{inputs.trained_model}}
+      --model_dir ${{inputs.model_dir}}
       --model_name auto-pricing-model
-      --description "Auto Pricing model registered from pipeline"
+    environment:
+      build:
+        image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
+        conda_file: aml/conda.yml
+    inputs:
+      model_dir: ${{parent.jobs.train.outputs.model_dir}}
