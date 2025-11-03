@@ -1,86 +1,77 @@
 import argparse
 import json
 import os
-import pathlib
-import shutil
-import sys
+from pathlib import Path
 
+import joblib
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
-import joblib
 
-def _load_dataframe(input_path: str) -> pd.DataFrame:
-    """
-    Load a dataframe from an Azure ML job input that might be:
-      - an MLTable (folder containing MLTable file)
-      - a Parquet file/folder
-      - a CSV file
-    """
-    p = pathlib.Path(input_path)
 
-    # 1) MLTable (folder containing "MLTable" file)
+def read_dataset(data_path: str) -> pd.DataFrame:
+    """Load an MLTable/Parquet/CSV as pandas DataFrame, best-effort."""
+    p = Path(data_path)
+
+    # MLTable (folder containing MLTable file)
     mltable_file = p / "MLTable"
     if mltable_file.exists():
-        try:
-            from mltable import load as mltable_load
-            return mltable_load(str(p)).to_pandas_dataframe()
-        except Exception as e:
-            print(f"[WARN] MLTable load failed, will try other formats. Error: {e}", file=sys.stderr)
+        # lazy import to avoid dependency issues if not present
+        import mltable
+        tbl = mltable.load(str(p))
+        return tbl.to_pandas_dataframe()
 
-    # 2) Parquet (file or folder)
-    try:
-        # pandas can read a directory of parquet files if they share schema
-        if p.is_dir():
-            # try glob parquet under folder
-            parquet_files = list(p.rglob("*.parquet"))
-            if parquet_files:
-                return pd.read_parquet(str(p))
-        elif p.suffix.lower() in [".parquet", ".pq"]:
-            return pd.read_parquet(str(p))
-    except Exception as e:
-        print(f"[WARN] Parquet load failed, will try CSV. Error: {e}", file=sys.stderr)
+    # Parquet folder or file
+    if p.is_dir():
+        parquet_files = list(p.rglob("*.parquet"))
+        if parquet_files:
+            return pd.read_parquet([str(f) for f in parquet_files])
+        csv_files = list(p.rglob("*.csv"))
+        if csv_files:
+            return pd.concat([pd.read_csv(str(f)) for f in csv_files], ignore_index=True)
 
-    # 3) CSV (single file or search under folder)
-    try:
-        if p.is_dir():
-            csvs = list(p.rglob("*.csv"))
-            if not csvs:
-                raise FileNotFoundError("No CSV files found in input folder.")
-            return pd.read_csv(csvs[0])
-        else:
-            return pd.read_csv(str(p))
-    except Exception as e:
-        raise RuntimeError(
-            f"Could not load data from '{input_path}' as MLTable/Parquet/CSV. "
-            f"Last error: {e}"
-        )
+    if p.suffix.lower() == ".parquet":
+        return pd.read_parquet(str(p))
+    if p.suffix.lower() == ".csv":
+        return pd.read_csv(str(p))
+
+    raise ValueError(f"Could not load dataset from path: {data_path}")
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=str, required=True, help="Input dataset (MLTable/Parquet/CSV)")
-    parser.add_argument("--target_column", type=str, default="price")
+    parser.add_argument("--data", type=str, required=True)
+    parser.add_argument("--target_column", type=str, required=True)
     parser.add_argument("--n_estimators", type=int, default=100)
     parser.add_argument("--max_depth", type=int, default=10)
     parser.add_argument("--model_dir", type=str, required=True)
     args = parser.parse_args()
 
-    print(f"[INFO] Loading data from: {args.data}")
-    df = _load_dataframe(args.data)
-    print(f"[INFO] Loaded shape: {df.shape}")
+    df = read_dataset(args.data)
+    print(f"Loaded dataset shape: {df.shape}")
 
+    # ------- tolerant target column (case-insensitive) -------
+    cols_lower = {c.lower(): c for c in df.columns}
+    tc_lower = args.target_column.lower()
     if args.target_column not in df.columns:
-        raise ValueError(
-            f"Target column '{args.target_column}' not found in data. "
-            f"Available columns: {list(df.columns)}"
-        )
+        if tc_lower in cols_lower:
+            args.target_column = cols_lower[tc_lower]
+        else:
+            raise ValueError(
+                f"Target column '{args.target_column}' not found. "
+                f"Available columns: {list(df.columns)}"
+            )
+    target = args.target_column
 
-    y = df[args.target_column]
-    X = df.drop(columns=[args.target_column])
+    # Split features/target
+    y = df[target]
+    X = df.drop(columns=[target])
 
-    # Handle any non-numeric columns quickly (simple one-hot)
+    # Simple preprocessing: one-hot encode categoricals
     X = pd.get_dummies(X, drop_first=True)
+    print(f"After one-hot, shape: {X.shape}")
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
@@ -90,34 +81,32 @@ def main():
         n_estimators=args.n_estimators,
         max_depth=args.max_depth,
         random_state=42,
-        n_jobs=-1
+        n_jobs=-1,
     )
     model.fit(X_train, y_train)
 
     preds = model.predict(X_test)
-    rmse = mean_squared_error(y_test, preds, squared=False)
-    r2 = r2_score(y_test, preds)
-    print(f"[METRIC] rmse={rmse:.4f} | r2={r2:.4f}")
+    metrics = {
+        "r2": float(r2_score(y_test, preds)),
+        "rmse": float(np.sqrt(mean_squared_error(y_test, preds))),
+        "mae": float(mean_absolute_error(y_test, preds)),
+        "n_features": int(X_train.shape[1]),
+        "n_train_rows": int(X_train.shape[0]),
+    }
+    print("Metrics:", metrics)
 
-    # Write metrics.json (the job UI reads this)
-    metrics = {"rmse": float(rmse), "r2": float(r2)}
-    os.makedirs("outputs", exist_ok=True)
-    with open("outputs/metrics.json", "w") as f:
+    # Save model and metrics to output folder
+    out_dir = Path(args.model_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, out_dir / "model.joblib")
+    with open(out_dir / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
 
-    # Persist the model artefact
-    model_dir = pathlib.Path(args.model_dir)
-    model_dir.mkdir(parents=True, exist_ok=True)
-    model_path = model_dir / "model.pkl"
-    joblib.dump(model, model_path)
-    print(f"[INFO] Saved model to: {model_path}")
+    # Save schema of training columns (for inference later)
+    pd.Series(X.columns).to_csv(out_dir / "feature_columns.csv", index=False)
 
-    # For convenience, also drop a minimal MLmodel file, making it easy to register later
-    # (not strictly required, but nice for clarity)
-    (model_dir / "MLmodel").write_text("flavor: sklearn\n")
+    print(f"Saved model to: {out_dir.resolve()}")
 
-    # Copy metrics alongside model_dir as an artefact too
-    shutil.copy("outputs/metrics.json", model_dir / "metrics.json")
 
 if __name__ == "__main__":
     main()
