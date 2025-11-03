@@ -1,35 +1,33 @@
 import argparse
-from pathlib import Path
-
-from azure.identity import DefaultAzureCredential
 from azure.ai.ml import MLClient
+from azure.identity import DefaultAzureCredential
 from azure.ai.ml.entities import Model
-
+from pathlib import Path
+import os
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_dir", type=str, required=True)
-    parser.add_argument("--model_name", type=str, default="auto-pricing-model")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--model_dir", required=True)
+    p.add_argument("--model_name", required=True)
+    args = p.parse_args()
 
-    model_path = Path(args.model_dir)
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model directory not found: {model_path}")
-
-    # In AzureML jobs, DefaultAzureCredential uses the job's managed identity
-    ml_client = MLClient.from_config(credential=DefaultAzureCredential())
-
-    registered = ml_client.models.create_or_update(
-        Model(
-            name=args.model_name,
-            path=str(model_path),
-            type="custom_model",   # (alternatives: mlflow_model, triton_model)
-            description="RandomForest model for auto pricing",
-            tags={"pipeline": "auto_pricing_pipeline"},
-        )
+    cred = DefaultAzureCredential()
+    ml_client = MLClient(
+        credential=cred,
+        subscription_id=os.environ["AZURE_SUBSCRIPTION_ID"],
+        resource_group_name=os.environ["AZURE_RESOURCE_GROUP"],
+        workspace_name=os.environ["AZURE_ML_WORKSPACE"],
     )
-    print(f"Registered model: {registered.name} v{registered.version}")
 
+    path = Path(args.model_dir)
+    mdl = Model(
+        name=args.model_name,
+        path=str(path),
+        description="Auto-pricing RandomForest (trained via GitHub Actions)",
+        type="custom_model",
+    )
+    mdl = ml_client.models.create_or_update(mdl)
+    print("Registered model:", mdl.name, mdl.version)
 
 if __name__ == "__main__":
     main()
