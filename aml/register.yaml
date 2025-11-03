@@ -1,0 +1,16 @@
+# aml/register.yaml
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+name: register_model
+display_name: Register Model
+type: command
+
+inputs:
+  model_path: { type: uri_folder }
+
+code: ..
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
+  conda_file: ../env/conda.yml
+
+command: >
+  python scripts/register_model.py --model_path ${{inputs.model_path}}
