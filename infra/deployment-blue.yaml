@@ -1,0 +1,23 @@
+$schema: https://azuremlschemas.azureedge.net/latest/onlineDeployment.schema.json
+name: blue
+endpoint_name: auto-pricing-ep
+
+model: azureml:auto-pricing-model:@latest
+
+code_configuration:
+  code: ./src/scoring
+  scoring_script: score.py
+
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
+  conda_file: ./src/scoring/conda.yaml
+
+instance_type: Standard_DS3_v2
+instance_count: 1
+
+request_settings:
+  request_timeout_ms: 60000
+
+liveness_probe:
+  initial_delay: 10
+  period: 10
