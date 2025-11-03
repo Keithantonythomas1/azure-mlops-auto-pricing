@@ -6,10 +6,9 @@ dependencies:
   - python=3.10
   - pip
   - pip:
-      - azure-ai-ml==1.30.0
+      - azure-ai-ml>=1.16.0
       - azure-identity>=1.16.0
-      - scikit-learn==1.4.2
-      - pandas==2.2.2
-      - pyarrow==16.1.0
-      - mltable==1.6.1
-      - joblib==1.4.2
+      - pandas
+      - pyarrow
+      - scikit-learn
+      - joblib
