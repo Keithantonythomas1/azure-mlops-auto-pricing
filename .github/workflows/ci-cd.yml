@@ -1,10 +1,7 @@
 # .github/workflows/ci-cd.yml
-# End-to-end Azure ML CI/CD (v2)
-# ✅ OIDC-first auth, ML v2 extension, safe step scripts, compute patched via --set
-
+# Train → Register → Deploy (online) on Azure ML
 name: aml-mlops-cicd
-on:
-  workflow_dispatch:
+on: { workflow_dispatch: {} }
 
 permissions:
   id-token: write
@@ -15,45 +12,38 @@ env:
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE:  MyFirstWorkSpace
   AZURE_REGION:        eastus
+  AML_COMPUTE:         Keith-Compute
 
-  # ===== Pipeline configuration =====
+  # ===== Pipeline =====
   AML_PIPELINE_FILE:   aml/pipeline.yml
   AML_JOB_NAME:        auto-pricing-e2e
-  AML_INPUT_DATA:      azureml:UsedCars:1        # dataset in your workspace
-  AML_COMPUTE:         Keith-Compute             # compute cluster name
+  AML_INPUT_DATA:      azureml:UsedCars:1        # <- uri_file data asset
 
 jobs:
   build-train-register:
     runs-on: ubuntu-latest
+    outputs:
+      job_name:   ${{ steps.submit.outputs.job_name }}
 
     steps:
-      # ================= CHECKOUT & PYTHON =================
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.10" }
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      # ================= AUTHENTICATION =================
-      - name: Select auth mode
+      - name: Auth mode
         id: auth
         shell: bash
         run: |
           if [ -n "${{ secrets.AZURE_CREDENTIALS }}" ]; then
             echo "mode=sp" >> "$GITHUB_OUTPUT"
-            echo "Using Service Principal (AZURE_CREDENTIALS present)."
           else
             echo "mode=oidc" >> "$GITHUB_OUTPUT"
-            echo "Using OIDC (recommended)."
           fi
 
-      - name: Azure login (Service Principal)
+      - name: Azure login (SP)
         if: steps.auth.outputs.mode == 'sp'
         uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+        with: { creds: ${{ secrets.AZURE_CREDENTIALS }} }
 
       - name: Azure login (OIDC)
         if: steps.auth.outputs.mode == 'oidc'
@@ -63,40 +53,21 @@ jobs:
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Ensure Azure login is active
+      - name: Verify login
         shell: bash
-        run: |
-          if ! az account show >/dev/null 2>&1; then
-            echo "::error::No active Azure login. Check OIDC/SP secrets."
-            exit 1
-          fi
-          echo "✅ Azure login verified."
+        run: az account show >/dev/null
 
-      # ================= INSTALL AZURE CLI + ML V2 EXT =================
-      - name: Install or upgrade Azure CLI + ML v2 extension
+      - name: Install Azure ML CLI v2
         shell: bash
         run: |
           set -euo pipefail
-          echo "🔹 Installing/Updating Azure CLI..."
           sudo apt-get update
           curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-
-          echo "🔹 Remove legacy ML extension (if any)..."
           az extension remove -n azure-cli-ml || true
-
-          echo "🔹 Install ML v2 extension..."
           az extension add -n ml --upgrade -y
-
-          echo "🔹 Verify install..."
-          az version
-          az extension show -n ml
-
-          echo "🔹 Python deps (SDKs)..."
           python -m pip install --upgrade pip
           pip install "azure-ai-ml>=1.16.0" "azure-identity>=1.16.0"
-          echo "✅ Azure CLI + ML v2 ready."
 
-      # ================= SUBMIT AML PIPELINE =================
       - name: Submit Azure ML pipeline job
         id: submit
         shell: bash
@@ -104,71 +75,108 @@ jobs:
           SUB_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           set -euo pipefail
-
-          if [ -n "${SUB_ID:-}" ]; then
-            az account set --subscription "$SUB_ID"
-          fi
-
-          echo "🌐 Active context:"
-          az account show --query "{Name:name, TenantId:tenantId, SubscriptionId:id}" -o table
-
-          echo "🔹 Unique job name..."
+          [ -n "${SUB_ID:-}" ] && az account set --subscription "$SUB_ID" || true
           BASE="${AML_JOB_NAME:-auto-pricing-e2e}"
           SUFFIX="$(date -u +%y%m%d-%H%M%S)-${GITHUB_RUN_NUMBER:-0}"
-          UNIQUE_NAME="$(echo "${BASE}-${SUFFIX}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
-          echo "📛 ${UNIQUE_NAME}"
+          NAME="$(echo "${BASE}-${SUFFIX}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
 
-          echo "📤 Submitting pipeline..."
           JOB_JSON="$(az ml job create \
             --file "${AML_PIPELINE_FILE}" \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
             --workspace-name "${AZURE_ML_WORKSPACE}" \
-            --name "${UNIQUE_NAME}" \
+            --name "${NAME}" \
             --set inputs.data="${AML_INPUT_DATA}" \
                   settings.default_compute="azureml:${AML_COMPUTE}" \
-            --only-show-errors -o json)"
-
+            -o json --only-show-errors)"
           echo "${JOB_JSON}" > job.json
-
-          if command -v jq >/dev/null 2>&1; then
-            JOB_NAME=$(jq -r '.name' job.json)
-          else
-            JOB_NAME=$(python -c "import json;print(json.load(open('job.json'))['name'])")
-          fi
+          JOB_NAME=$(python - << 'PY'
+import json; print(json.load(open('job.json'))['name'])
+PY
+)
           echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
-          echo "✅ Job submitted: ${JOB_NAME}"
 
-      # ================= POST-STUDIO SUMMARY (fixed) =================
       - name: Post Azure ML Studio link
         shell: bash
         run: |
           set -euo pipefail
           JOB="${{ steps.submit.outputs.job_name }}"
-          # capture URL, suppress SDK experimental warnings
-          URL="$(az ml job show \
-                  --name "$JOB" \
-                  --resource-group "${AZURE_RESOURCE_GROUP}" \
-                  --workspace-name "${AZURE_ML_WORKSPACE}" \
-                  --query "coalesce(studio_url, studioUrl)" -o tsv 2>/dev/null || true)"
+          URL="$(az ml job show --name "$JOB" \
+                 --resource-group "${AZURE_RESOURCE_GROUP}" \
+                 --workspace-name "${AZURE_ML_WORKSPACE}" \
+                 --query "coalesce(studio_url, studioUrl)" -o tsv 2>/dev/null || true)"
           echo "## ✅ Azure ML Job Submitted" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Workspace**: ${AZURE_ML_WORKSPACE}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Resource Group**: ${AZURE_RESOURCE_GROUP}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Region**: ${AZURE_REGION}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Job Name**: ${JOB}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Studio Link**: ${URL:-(not available yet)}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Job**: ${JOB}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Link**: ${URL:-(pending)}" >> "$GITHUB_STEP_SUMMARY"
 
-      # ================= ARTIFACT & LOGOUT =================
-      - name: Upload job.json artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: aml-job-json
-          path: job.json
+      - uses: actions/upload-artifact@v4
+        with: { name: aml-job-json, path: job.json }
 
       - name: Logout Azure
         if: always()
         continue-on-error: true
         shell: bash
         run: |
-          az account show >/dev/null 2>&1 && az logout || echo "No active Azure login; skipping logout."
+          az account show >/dev/null 2>&1 && az logout || true
           az account clear || true
-          echo "🧹 Azure session cleared."
+
+  deploy-online:
+    needs: build-train-register
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Azure ML CLI v2
+        shell: bash
+        run: |
+          sudo apt-get update
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az extension add -n ml --upgrade -y
+
+      - name: Create endpoint (idempotent)
+        shell: bash
+        run: |
+          az ml online-endpoint create -f infra/endpoint.yaml \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --workspace-name "${{ env.AZURE_ML_WORKSPACE }}" || true
+
+      - name: Pin latest registered model into deployment spec
+        shell: bash
+        run: |
+          VER=$(az ml model list \
+            --name auto-pricing-model \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --workspace-name "${{ env.AZURE_ML_WORKSPACE }}" \
+            --query "[0].version" -o tsv)
+          echo "MODEL_VER=$VER" >> $GITHUB_ENV
+          sed "s|azureml:auto-pricing-model:@latest|azureml:auto-pricing-model:${VER}|" \
+            infra/deployment-blue.yaml > /tmp/deployment-blue.yaml
+
+      - name: Deploy model (blue) & route all traffic
+        shell: bash
+        run: |
+          az ml online-deployment create \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --workspace-name "${{ env.AZURE_ML_WORKSPACE }}" \
+            -f /tmp/deployment-blue.yaml --all-traffic
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          ENDPOINT=$(az ml online-endpoint show -n auto-pricing-ep \
+                   --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+                   --workspace-name "${{ env.AZURE_ML_WORKSPACE }}" \
+                   --query scoring_uri -o tsv)
+          KEY=$(az ml online-endpoint get-keys -n auto-pricing-ep \
+              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+              --workspace-name "${{ env.AZURE_ML_WORKSPACE }}" \
+              --query primaryKey -o tsv)
+          curl -s -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+            -d '{"inputs":[{"features":[120000, 2017, 2.4]}]}' "$ENDPOINT" | tee /tmp/resp.json
