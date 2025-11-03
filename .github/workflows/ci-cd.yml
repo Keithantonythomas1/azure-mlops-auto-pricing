@@ -1,5 +1,5 @@
 # .github/workflows/ci-cd.yml
-# Train → Register → (optional) Deploy on Azure ML
+# Train → Register → Retrieve Studio Link (Azure ML)
 
 name: aml-mlops-cicd
 
@@ -11,11 +11,13 @@ permissions:
   contents: read
 
 env:
+  # ===== Azure resources =====
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE: MyFirstWorkSpace
   AZURE_REGION: eastus
   AML_COMPUTE: Keith-Compute
 
+  # ===== Pipeline =====
   AML_PIPELINE_FILE: aml/pipeline.yml
   AML_JOB_NAME: auto-pricing-e2e
   AML_INPUT_DATA: azureml:UsedCars:1
@@ -25,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       job_name: ${{ steps.submit.outputs.job_name }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -96,18 +99,21 @@ jobs:
           JOB_NAME=$(python -c "import json; print(json.load(open('job.json'))['name'])")
           echo "job_name=${JOB_NAME}" >> "$GITHUB_OUTPUT"
 
-      - name: Post Azure ML Studio link
+      # ✅ Option A — One-liner: Get the Azure ML Studio link immediately
+      - name: Retrieve Azure ML Studio link
         shell: bash
         run: |
-          set -euo pipefail
           JOB="${{ steps.submit.outputs.job_name }}"
-          URL="$(az ml job show --name "$JOB" \
-                 --resource-group "${AZURE_RESOURCE_GROUP}" \
-                 --workspace-name "${AZURE_ML_WORKSPACE}" \
-                 --query "coalesce(studio_url, studioUrl)" -o tsv 2>/dev/null || true)"
+          echo "🔗 Fetching Studio URL for Job: $JOB"
+          URL=$(az ml job show \
+            --name "$JOB" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --workspace-name "${AZURE_ML_WORKSPACE}" \
+            --query "coalesce(studio_url, studioUrl)" -o tsv)
           echo "## ✅ Azure ML Job Submitted" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Job**: ${JOB}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Link**: ${URL:-(pending)}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Studio Link**: ${URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "🎯 Studio Link: ${URL}"
 
       - name: Upload job.json artifact
         uses: actions/upload-artifact@v4
