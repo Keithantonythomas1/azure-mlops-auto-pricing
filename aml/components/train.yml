@@ -3,15 +3,17 @@ name: TrainRandomForest
 display_name: Train RandomForest
 type: command
 
+# ✅ Expect an MLTable (works with azureml:<name>:<version> data assets)
 inputs:
   training_data:
-    type: uri_file
+    type: mltable
   target_column:
     type: string
   n_estimators:
     type: integer
   max_depth:
     type: integer
+
 outputs:
   model_dir:
     type: uri_folder
