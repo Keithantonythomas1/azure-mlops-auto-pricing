@@ -1,3 +1,4 @@
+# aml/conda.yml
 name: auto-pricing-env
 channels:
   - conda-forge
@@ -6,9 +7,10 @@ dependencies:
   - python=3.10
   - pip
   - pip:
-      - azure-ai-ml>=1.16.0
-      - azure-identity>=1.16.0
-      - pandas
-      - pyarrow
-      - scikit-learn
-      - joblib
+      - pandas==2.2.2
+      - scikit-learn==1.5.2
+      - joblib==1.4.2
+      - azure-ai-ml==1.30.0
+      - azure-identity==1.25.1
+      - mltable==1.5.0
+
