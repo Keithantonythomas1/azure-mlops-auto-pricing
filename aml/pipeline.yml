@@ -4,47 +4,38 @@ type: pipeline
 description: Auto pricing end-to-end training + register
 
 settings:
-  # values that contain ":" must be quoted
   default_compute: "azureml:Keith-Compute"
   continue_on_step_failure: false
 
+# NOTE: For literals (string/int/bool), do NOT add 'type:' — just give the value or default.
 inputs:
   training_data:
     type: mltable
-    path: "azureml:UsedCars:1"     # quoted because of ":"
-  target_column:
-    type: string
-    default: price
-  n_estimators:
-    type: integer
-    default: 100
-  max_depth:
-    type: integer
-    default: 10
-  model_name:
-    type: string
-    default: auto-pricing-model
+    path: "azureml:UsedCars:1"
+  target_column: "price"
+  n_estimators: 100
+  max_depth: 10
+  model_name: "auto-pricing-model"
 
 jobs:
   train:
     type: command
-    # IMPORTANT: quote the component reference because it contains "file: "
-    component: "file: ./components/train.yml"
+    # IMPORTANT: no space after 'file:' inside the string
+    component: "file:components/train.yml"
     inputs:
-      training_data: ${{parent.inputs.training_data}}
-      target_column: ${{parent.inputs.target_column}}
-      n_estimators: ${{parent.inputs.n_estimators}}
-      max_depth: ${{parent.inputs.max_depth}}
+      training_data: ${{ parent.inputs.training_data }}
+      target_column: ${{ parent.inputs.target_column }}
+      n_estimators: ${{ parent.inputs.n_estimators }}
+      max_depth: ${{ parent.inputs.max_depth }}
     outputs:
       model_dir: {}
       metrics: {}
 
   register:
     type: command
-    # IMPORTANT: quote the component reference
-    component: "file: ./components/register.yml"
+    component: "file:components/register.yml"
     inputs:
-      model_dir: ${{parent.jobs.train.outputs.model_dir}}
-      model_name: ${{parent.inputs.model_name}}
+      model_dir: ${{ parent.jobs.train.outputs.model_dir }}
+      model_name: ${{ parent.inputs.model_name }}
     depends_on:
       - train
