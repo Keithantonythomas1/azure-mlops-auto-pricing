@@ -5,7 +5,7 @@ description: Train a model and register it.
 
 inputs:
   training_data:
-    type: mltable
+    type: uri_file
     path: azureml:UsedCars:1
     mode: ro_mount
   target_column: price
