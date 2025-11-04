@@ -4,7 +4,6 @@ type: pipeline
 name: auto-pricing-e2e
 description: Train and register a RandomForest model for used car pricing
 
-# Pipeline-level inputs you can override at submit time (GitHub Actions does)
 inputs:
   training_data:
     type: uri_file
@@ -22,7 +21,9 @@ inputs:
     default: auto-pricing-model
 
 settings:
-  default_compute: ${env.AML_COMPUTE}   # or hardcode your compute name
+  # YAML only accepts 'serverless' or a literal 'azureml:<compute-name>'.
+  # We use 'serverless' here and override from the GitHub Action with --set.
+  default_compute: serverless
   continue_on_step_failure: false
 
 jobs:
@@ -38,7 +39,6 @@ jobs:
   register:
     type: command
     component: file:components/register.yml
-    # ❌ no 'depends_on' needed; the output binding below creates the dependency
     inputs:
-      model_dir: ${{parent.jobs.train.outputs.model_dir}}
+      model_dir: ${{parent.jobs.train.outputs.model_dir}}  # creates dependency
       model_name: ${{parent.inputs.model_name}}
