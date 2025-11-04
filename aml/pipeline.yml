@@ -21,7 +21,7 @@ settings:
 jobs:
   train:
     type: command
-    component: file:components/train.yml
+    component: file:components/train.yml   # training_data input must be 'mltable' in this component
     inputs:
       training_data: ${{parent.inputs.training_data}}
       target_column:  ${{parent.inputs.target_column}}
