@@ -6,9 +6,9 @@ type: command
 display_name: Register Model
 description: Register the trained model artifact to the AML workspace
 
-code: src/register
+# NOTE: this path is relative to this YAML (aml/components/)
+code: ../src/register
 
-# ✅ Same curated environment
 environment: azureml://registries/azureml/environments/AzureML-sklearn-1.2-ubuntu20.04-py38-cpu/labels/latest
 
 inputs:
