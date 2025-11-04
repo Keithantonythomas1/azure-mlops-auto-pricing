@@ -3,7 +3,6 @@ name: TrainRandomForest
 display_name: Train RandomForest
 type: command
 
-# ✅ Expect an MLTable (works with azureml:<name>:<version> data assets)
 inputs:
   training_data:
     type: mltable
@@ -20,9 +19,7 @@ outputs:
   metrics:
     type: uri_folder
 
-# Put the training script (train.py) in the SAME folder as this YAML
 code: .
-
 environment:
   image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
   conda_file: ../env/conda.yml
