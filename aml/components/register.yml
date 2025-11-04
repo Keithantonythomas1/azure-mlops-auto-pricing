@@ -1,0 +1,23 @@
+# aml/components/register.yml
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+name: auto_pricing_register
+display_name: Register Model
+type: command
+
+code: ../../src
+
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
+  conda_file: ../conda.yml
+
+inputs:
+  model_dir:
+    type: uri_folder
+  model_name:
+    type: string
+    default: auto-pricing-model
+
+command: >-
+  python register.py
+  --model_dir ${{inputs.model_dir}}
+  --model_name ${{inputs.model_name}}
