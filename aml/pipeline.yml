@@ -3,23 +3,18 @@ type: pipeline
 display_name: auto_pricing_pipeline
 description: Train a model and register it.
 
-# NOTE:
-# - For literal parameters (numbers/strings) DO NOT use "type: integer/string" at the PIPELINE JOB level.
-# - Provide literal defaults here (or override via --set at submission).
-# - Data inputs (datasets/files) will be provided via --set inputs.training_data=azureml:... in the workflow.
-
-# Pipeline-level inputs (literals provided as plain values)
+# Pipeline-level inputs
 inputs:
-  # Will be overridden by the workflow: --set inputs.training_data=azureml:UsedCars:1
   training_data:
-  # Will be overridden by the workflow: --set inputs.target_column=price
-  target_column:
-  # Provide sensible defaults; can also be overridden with --set inputs.n_estimators=...
+    data: azureml:UsedCars:1
+    type: mltable
+    mode: ro_mount
+  target_column: price
   n_estimators: 100
   max_depth: 10
   model_name: auto-pricing-model
 
-# Default compute can be overridden by the workflow --set settings.default_compute=azureml:<cluster>
+# Default compute (can be overridden with --set settings.default_compute=azureml:<cluster>)
 settings:
   default_compute: serverless
 
@@ -33,7 +28,7 @@ jobs:
       n_estimators:   ${{parent.inputs.n_estimators}}
       max_depth:      ${{parent.inputs.max_depth}}
     outputs:
-      model_dir: ${{parent.jobs.register.inputs.model_dir}}
+      model_dir:
       metrics:
 
   register:
