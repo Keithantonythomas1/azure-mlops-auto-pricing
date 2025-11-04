@@ -35,6 +35,7 @@ jobs:
       # Add repo Variables (Settings → Variables → Repository):
       #   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
       - name: Guard: ensure Azure IDs are available
+        shell: bash
         run: |
           set -euo pipefail
           if [ -z "${{ vars.AZURE_CLIENT_ID }}" ]; then
@@ -54,11 +55,13 @@ jobs:
           enable-AzPSSession: false
 
       - name: Verify login
+        shell: bash
         run: |
           set -euo pipefail
           az account show -o table
 
       - name: Set Azure ML defaults
+        shell: bash
         run: |
           set -euo pipefail
           az configure --defaults \
@@ -68,6 +71,7 @@ jobs:
           echo "✅ Defaults set for RG=${{ env.AZURE_RESOURCE_GROUP }}, WS=${{ env.AZURE_ML_WORKSPACE }}, LOC=${{ env.AZURE_REGION }}"
 
       - name: Install/update Azure ML CLI v2
+        shell: bash
         run: |
           set -euo pipefail
           az extension add -n ml -y || az extension update -n ml
@@ -75,6 +79,7 @@ jobs:
 
       # ---------- Submit the pipeline job ----------
       - name: Submit pipeline to Azure ML
+        shell: bash
         run: |
           set -euo pipefail
           JOB_NAME="${{ env.AML_JOB_NAME }}-$(date +'%y%m%d-%H%M%S')"
@@ -89,6 +94,7 @@ jobs:
 
       - name: Post Azure ML Studio link
         if: always()
+        shell: bash
         run: |
           set -euo pipefail
           command -v jq >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y jq; }
