@@ -5,21 +5,11 @@ type: command
 display_name: Register Model
 description: Register the trained model artifact to the workspace model registry
 
-# RELATIVE TO THIS FILE (components/register.yml)
+# Path is relative to THIS file (components/register.yml)
 code: ../src/register
 
-# Light Python base with azure-ai-ml installed
-environment:
-  image: mcr.microsoft.com/azureml/curated/minimal-ubuntu20.04-py38-cpu-inference:202306
-  conda_file: |
-    name: register-env
-    channels: [conda-forge, defaults]
-    dependencies:
-      - python=3.8
-      - pip
-      - pip:
-          - azure-ai-ml>=1.15.0
-          - azure-identity>=1.16.0
+# Use a curated env; the script will pip-install azure libs at runtime
+environment: azureml://registries/azureml/environments/sklearn-1.2/labels/latest
 
 inputs:
   model_dir:
