@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  # ---- Azure ML workspace context (edit these if your names differ) ----
+  # ---- Azure ML workspace context (edit these if your names differ) -----
   AZURE_REGION: eastus
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE: MyFirstWorkSpace
