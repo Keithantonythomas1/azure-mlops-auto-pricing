@@ -3,7 +3,6 @@ type: pipeline
 display_name: auto_pricing_pipeline
 description: Train a model and register it.
 
-# Pipeline-level inputs
 inputs:
   training_data:
     type: mltable
@@ -14,7 +13,6 @@ inputs:
   max_depth: 10
   model_name: auto-pricing-model
 
-# Default compute (can be overridden with --set settings.default_compute=azureml:<cluster>)
 settings:
   default_compute: serverless
 
