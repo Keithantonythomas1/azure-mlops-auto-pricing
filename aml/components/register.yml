@@ -1,22 +1,20 @@
-# aml/components/register.yml
 $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
-name: register_model
-version: 1
-type: command
+name: RegisterModel
 display_name: Register Model
-description: Register the trained model artifact to the AML workspace
-
-# NOTE: this path is relative to this YAML (aml/components/)
-code: ../src/register
-
-environment: azureml://registries/azureml/environments/AzureML-sklearn-1.2-ubuntu20.04-py38-cpu/labels/latest
+type: command
 
 inputs:
   model_dir:
     type: uri_folder
   model_name:
     type: string
-    default: auto-pricing-model
+
+# no declared outputs needed for simple registration
+code: ./src/register
+
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
+  conda_file: ../env/conda.yml
 
 command: >-
   python register.py
