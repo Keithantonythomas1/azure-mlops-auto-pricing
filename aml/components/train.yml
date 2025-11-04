@@ -5,10 +5,10 @@ type: command
 display_name: Train RandomForest
 description: Train a RandomForestRegressor and output a pickle + metrics
 
-# NOTE: path is RELATIVE TO THIS FILE (components/train.yml)
+# Path is relative to THIS file (components/train.yml)
 code: ../src/train
 
-# Use a curated, supported environment with scikit-learn
+# Reliable curated env that contains sklearn & Python
 environment: azureml://registries/azureml/environments/sklearn-1.2/labels/latest
 
 inputs:
