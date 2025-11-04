@@ -1,38 +1,31 @@
 import argparse
 import os
-from azure.identity import DefaultAzureCredential
 from azure.ai.ml import MLClient
+from azure.identity import DefaultAzureCredential
 from azure.ai.ml.entities import Model
-
-def resolve_workspace_from_env():
-    # These are injected by AzureML into job containers
-    sub = os.environ.get("AZUREML_ARM_SUBSCRIPTION") or os.environ.get("AZUREML_SUBSCRIPTION_ID")
-    rg  = os.environ.get("AZUREML_ARM_RESOURCEGROUP") or os.environ.get("AZUREML_RESOURCE_GROUP")
-    ws  = os.environ.get("AZUREML_ARM_WORKSPACE_NAME") or os.environ.get("AZUREML_WORKSPACE_NAME")
-    if not all([sub, rg, ws]):
-        raise RuntimeError("Could not resolve workspace from job environment variables.")
-    return sub, rg, ws
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_dir", type=str, required=True)
-    parser.add_argument("--model_name", type=str, required=True)
+    parser.add_argument("--model_dir", required=True)
+    parser.add_argument("--model_name", required=True, default="auto-pricing-model")
     args = parser.parse_args()
 
-    subscription_id, resource_group, workspace = resolve_workspace_from_env()
+    # Workspace auth via managed identity / OIDC (DefaultAzureCredential)
+    ml_client = MLClient.from_config(credential=DefaultAzureCredential())
 
-    cred = DefaultAzureCredential()
-    ml_client = MLClient(cred, subscription_id, resource_group, workspace)
+    model_path = os.path.join(args.model_dir, "model.joblib")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Expected model file not found at {model_path}")
 
     model = Model(
         name=args.model_name,
-        path=args.model_dir,     # folder produced by train step
-        type="custom_model",
-        description="Auto pricing regressor",
-        version=None             # let AML version it automatically
+        path=args.model_dir,      # folder with model files
+        type="mlflow_model",      # or "custom_model" if you prefer; folder is fine
+        description="Auto pricing RandomForest model",
+        tags={"registered-by": "aml-pipeline"}
     )
-    created = ml_client.models.create_or_update(model)
-    print(f"Registered model: {created.name} v{created.version}")
+    model = ml_client.models.create_or_update(model)
+    print(f"Registered model: {model.name} v{model.version}")
 
 if __name__ == "__main__":
     main()
