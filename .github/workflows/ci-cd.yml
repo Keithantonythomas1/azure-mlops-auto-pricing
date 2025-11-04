@@ -9,19 +9,21 @@ permissions:
   id-token: write     # OIDC for azure/login
   contents: read
 
-# Use bash everywhere to avoid shell ambiguity
 defaults:
   run:
     shell: bash
 
 env:
-  # ---- Azure ML workspace context (edit these if your names differ) -----
+  # ---- Azure ML workspace context ----
   AZURE_REGION: eastus
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE: MyFirstWorkSpace
-  AML_COMPUTE: Keith-Compute                # a compute in your AML workspace
-  AML_JOB_NAME: auto-pricing-e2e            # experiment name
-  AML_INPUT_DATA: azureml:UsedCars:1        # registered dataset path
+  AML_COMPUTE: Keith-Compute          # compute in your AML workspace
+  AML_JOB_NAME: auto-pricing-e2e      # experiment name
+
+  # OPTIONAL: only needed if you want to override the dataset from CI
+  USEDCARS_NAME: UsedCars
+  USEDCARS_VERSION: "1"
 
 jobs:
   build-train-register:
@@ -36,9 +38,6 @@ jobs:
         with:
           python-version: "3.10"
 
-      # ---------- HARD FAIL if any required repo Variables are missing ----------
-      # Add these at: Settings → Variables → Repository
-      #   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
       - name: Validate required repo variables
         if: ${{ !vars.AZURE_CLIENT_ID || !vars.AZURE_TENANT_ID || !vars.AZURE_SUBSCRIPTION_ID }}
         run: |
@@ -58,7 +57,7 @@ jobs:
       - name: Verify login
         run: az account show -o table
 
-      - name: Set Azure defaults for this run
+      - name: Set Azure defaults
         run: |
           az configure --defaults \
             group=${{ env.AZURE_RESOURCE_GROUP }} \
@@ -72,7 +71,7 @@ jobs:
           az ml -h 1>/dev/null
 
       # ---------- Submit the pipeline job ----------
-      # NOTE: If your AML compute is a named cluster, keep the 'azureml:' prefix below.
+      # OPTION A (recommended): Do NOT override training_data — pipeline.yml already points to azureml:UsedCars:1
       - name: Submit pipeline to Azure ML
         run: |
           set -euo pipefail
@@ -81,23 +80,35 @@ jobs:
           az ml job create \
             --file aml/pipeline.yml \
             --set settings.default_compute=azureml:${{ env.AML_COMPUTE }} \
-            --set inputs.training_data=${{ env.AML_INPUT_DATA }} \
-            --set inputs.target_column=price \
+                  inputs.target_column=price \
             --name "$JOB_NAME"
           echo "{\"job\":\"$JOB_NAME\"}" > aml-job.json
+
+      # ---------- OPTION B: If you MUST override the dataset version from CI, use nested fields (uncomment) ----------
+      # - name: Submit pipeline to Azure ML (override dataset)
+      #   run: |
+      #     set -euo pipefail
+      #     JOB_NAME="${{ env.AML_JOB_NAME }}-$(date +'%y%m%d-%H%M%S')"
+      #     echo "🚀 Submitting job: $JOB_NAME (with dataset override)"
+      #     az ml job create \
+      #       --file aml/pipeline.yml \
+      #       --set settings.default_compute=azureml:${{ env.AML_COMPUTE }} \
+      #             inputs.training_data.type=mltable \
+      #             inputs.training_data.path=azureml:${{ env.USEDCARS_NAME }}:${{ env.USEDCARS_VERSION }} \
+      #             inputs.training_data.mode=ro_mount \
+      #             inputs.target_column=price \
+      #       --name "$JOB_NAME"
+      #     echo "{\"job\":\"$JOB_NAME\"}" > aml-job.json
 
       - name: Post Azure ML Studio link
         if: always()
         run: |
-          # jq may not exist on the runner; install if needed
           if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update -y
-            sudo apt-get install -y jq
+            sudo apt-get update -y && sudo apt-get install -y jq
           fi
           JOB=$(jq -r '.job' aml-job.json)
           STUDIO_URL="https://ml.azure.com/experiments/${{ env.AML_JOB_NAME }}/jobs/${JOB}/overview?wsid=/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ env.AZURE_RESOURCE_GROUP }}/providers/Microsoft.MachineLearningServices/workspaces/${{ env.AZURE_ML_WORKSPACE }}"
-          echo "🔗 Azure ML Studio: $STUDIO_URL"
-          echo "$STUDIO_URL" > aml-studio-link.txt
+          echo "🔗 Azure ML Studio: $STUDIO_URL" | tee aml-studio-link.txt
 
       - name: Upload AML job info
         if: always()
