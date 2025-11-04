@@ -1,0 +1,40 @@
+# aml/components/train.yml
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+name: auto_pricing_train
+display_name: Train RandomForest
+type: command
+
+# All file paths are resolved relative to this YAML file.
+code: ../../src
+
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
+  conda_file: ../conda.yml
+
+inputs:
+  training_data:
+    type: mltable
+  target_column:
+    type: string
+    default: price
+  n_estimators:
+    type: integer
+    default: 100
+  max_depth:
+    type: integer
+    default: 10
+
+outputs:
+  model_dir:
+    type: uri_folder
+  metrics:
+    type: uri_file
+
+command: >-
+  python train.py
+  --data ${{inputs.training_data}}
+  --target ${{inputs.target_column}}
+  --n_estimators ${{inputs.n_estimators}}
+  --max_depth ${{inputs.max_depth}}
+  --output ${{outputs.model_dir}}
+  --metrics ${{outputs.metrics}}
