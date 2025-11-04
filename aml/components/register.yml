@@ -9,8 +9,8 @@ inputs:
   model_name:
     type: string
 
-# no declared outputs needed for simple registration
-code: ./src/register
+# Put the register script (register.py) in the SAME folder as this YAML
+code: .
 
 environment:
   image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
