@@ -4,13 +4,14 @@ type: pipeline
 description: Auto pricing end-to-end training + register
 
 settings:
-  default_compute: "azureml:Keith-Compute"   # <-- quote values containing a colon
+  # values that contain ":" must be quoted
+  default_compute: "azureml:Keith-Compute"
   continue_on_step_failure: false
 
 inputs:
   training_data:
     type: mltable
-    path: "azureml:UsedCars:1"               # <-- quote values containing a colon
+    path: "azureml:UsedCars:1"     # quoted because of ":"
   target_column:
     type: string
     default: price
@@ -27,7 +28,8 @@ inputs:
 jobs:
   train:
     type: command
-    component: file: ./components/train.yml
+    # IMPORTANT: quote the component reference because it contains "file: "
+    component: "file: ./components/train.yml"
     inputs:
       training_data: ${{parent.inputs.training_data}}
       target_column: ${{parent.inputs.target_column}}
@@ -39,7 +41,8 @@ jobs:
 
   register:
     type: command
-    component: file: ./components/register.yml
+    # IMPORTANT: quote the component reference
+    component: "file: ./components/register.yml"
     inputs:
       model_dir: ${{parent.jobs.train.outputs.model_dir}}
       model_name: ${{parent.inputs.model_name}}
