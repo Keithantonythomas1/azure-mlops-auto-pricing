@@ -1,22 +1,13 @@
-# aml/components/train.yml
 $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
-name: auto_pricing_train
+name: Train_RandomForest
 display_name: Train RandomForest
 type: command
 
-# All file paths are resolved relative to this YAML file.
-code: ../../src
-
-environment:
-  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
-  conda_file: ../conda.yml
-
 inputs:
   training_data:
-    type: mltable
+    type: uri_file
   target_column:
     type: string
-    default: price
   n_estimators:
     type: integer
     default: 100
@@ -29,6 +20,13 @@ outputs:
     type: uri_folder
   metrics:
     type: uri_file
+
+# point to your training source folder that contains train.py
+code: ../src/train
+
+# ✅ Use a curated AzureML environment (no build needed)
+# If this specific version isn't available in your region, see the note at the end.
+environment: azureml://registries/azureml/environments/sklearn-1.3/versions/9
 
 command: >-
   python train.py
