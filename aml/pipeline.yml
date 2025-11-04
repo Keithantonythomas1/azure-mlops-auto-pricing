@@ -1,38 +1,44 @@
+# aml/pipeline.yml
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
-experiment_name: auto-pricing-e2e
-description: Train and register the Auto Pricing model
+name: auto-pricing-e2e
+description: Train and register a RandomForest model for used car pricing
 
-settings:
-  default_compute: "azureml:Keith-Compute"
-
+# Pipeline-level inputs you can override at submit time (GitHub Actions does)
 inputs:
   training_data:
     type: uri_file
-    path: "azureml:UsedCars:1"
-  target_column: "price"
-  n_estimators: 100
-  max_depth: 10
-  model_name: "auto-pricing-model"
+  target_column:
+    type: string
+    default: price
+  n_estimators:
+    type: integer
+    default: 100
+  max_depth:
+    type: integer
+    default: 10
+  model_name:
+    type: string
+    default: auto-pricing-model
+
+settings:
+  default_compute: ${env.AML_COMPUTE}   # or hardcode your compute name
+  continue_on_step_failure: false
 
 jobs:
   train:
     type: command
-    component: "file:components/train.yml"
+    component: file:components/train.yml
     inputs:
-      training_data: ${{ parent.inputs.training_data }}
-      target_column: ${{ parent.inputs.target_column }}
-      n_estimators: ${{ parent.inputs.n_estimators }}
-      max_depth: ${{ parent.inputs.max_depth }}
-    outputs:
-      model_dir: {}
-      metrics: {}
+      training_data: ${{parent.inputs.training_data}}
+      target_column: ${{parent.inputs.target_column}}
+      n_estimators: ${{parent.inputs.n_estimators}}
+      max_depth: ${{parent.inputs.max_depth}}
 
   register:
     type: command
-    component: "file:components/register.yml"
+    component: file:components/register.yml
+    # ❌ no 'depends_on' needed; the output binding below creates the dependency
     inputs:
-      model_dir: ${{ parent.jobs.train.outputs.model_dir }}
-      model_name: ${{ parent.inputs.model_name }}
-    depends_on:
-      - train
+      model_dir: ${{parent.jobs.train.outputs.model_dir}}
+      model_name: ${{parent.inputs.model_name}}
