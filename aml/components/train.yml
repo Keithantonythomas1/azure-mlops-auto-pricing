@@ -2,10 +2,14 @@ $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.jso
 name: TrainRandomForest
 display_name: Train RandomForest
 type: command
+version: 1
 
+# -------------------------------------------------------------------
+# Component Inputs  — aligned to MLTable pipeline and train.py script
+# -------------------------------------------------------------------
 inputs:
   training_data:
-    type: uri_file          # ✅ CSV file
+    type: mltable              # ✅ expect MLTable dataset
   target_column:
     type: string
   n_estimators:
@@ -13,18 +17,27 @@ inputs:
   max_depth:
     type: integer
 
+# -------------------------------------------------------------------
+# Component Outputs
+# -------------------------------------------------------------------
 outputs:
   model_dir:
     type: uri_folder
   metrics:
     type: uri_folder
 
-code: .
+# -------------------------------------------------------------------
+# Code & Environment configuration
+# -------------------------------------------------------------------
+code: .                        # train.py lives in this folder
 
 environment:
   image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
   conda_file: ../env/conda.yml
 
+# -------------------------------------------------------------------
+# Execution Command
+# -------------------------------------------------------------------
 command: >-
   python train.py
   --data ${{inputs.training_data}}
