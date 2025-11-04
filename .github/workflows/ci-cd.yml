@@ -9,14 +9,19 @@ permissions:
   id-token: write     # OIDC for azure/login
   contents: read
 
+# Use bash everywhere to avoid shell ambiguity
+defaults:
+  run:
+    shell: bash
+
 env:
   # ---- Azure ML workspace context (edit these if your names differ) -----
   AZURE_REGION: eastus
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE: MyFirstWorkSpace
-  AML_COMPUTE: Keith-Compute
-  AML_JOB_NAME: auto-pricing-e2e
-  AML_INPUT_DATA: azureml:UsedCars:1
+  AML_COMPUTE: Keith-Compute                # a compute in your AML workspace
+  AML_JOB_NAME: auto-pricing-e2e            # experiment name
+  AML_INPUT_DATA: azureml:UsedCars:1        # registered dataset path
 
 jobs:
   build-train-register:
@@ -31,22 +36,16 @@ jobs:
         with:
           python-version: "3.10"
 
-      # ---------- OPTION A (RECOMMENDED): repo Variables must exist ----------
-      # Add repo Variables (Settings → Variables → Repository):
+      # ---------- HARD FAIL if any required repo Variables are missing ----------
+      # Add these at: Settings → Variables → Repository
       #   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-      - name: Guard: ensure Azure IDs are available
-        env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Validate required repo variables
+        if: ${{ !vars.AZURE_CLIENT_ID || !vars.AZURE_TENANT_ID || !vars.AZURE_SUBSCRIPTION_ID }}
         run: |
-          set -euo pipefail
-          for v in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
-            if [ -z "${!v}" ]; then
-              echo "❌ Missing repo variable $v"; exit 1
-            fi
-          done
-          echo "✅ All required Azure identifiers are present."
+          echo "❌ Missing required repo variables."
+          echo "   Set AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID in"
+          echo "   GitHub → Settings → Variables → Repository."
+          exit 1
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -57,26 +56,23 @@ jobs:
           enable-AzPSSession: false
 
       - name: Verify login
-        run: |
-          set -euo pipefail
-          az account show -o table
+        run: az account show -o table
 
-      - name: Set Azure ML defaults
+      - name: Set Azure defaults for this run
         run: |
-          set -euo pipefail
           az configure --defaults \
             group=${{ env.AZURE_RESOURCE_GROUP }} \
             workspace=${{ env.AZURE_ML_WORKSPACE }} \
             location=${{ env.AZURE_REGION }}
-          echo "✅ Defaults set for RG=${{ env.AZURE_RESOURCE_GROUP }}, WS=${{ env.AZURE_ML_WORKSPACE }}, LOC=${{ env.AZURE_REGION }}"
+          echo "✅ Defaults set: RG=${{ env.AZURE_RESOURCE_GROUP }}, WS=${{ env.AZURE_ML_WORKSPACE }}, LOC=${{ env.AZURE_REGION }}"
 
       - name: Install/update Azure ML CLI v2
         run: |
-          set -euo pipefail
           az extension add -n ml -y || az extension update -n ml
           az ml -h 1>/dev/null
 
       # ---------- Submit the pipeline job ----------
+      # NOTE: If your AML compute is a named cluster, keep the 'azureml:' prefix below.
       - name: Submit pipeline to Azure ML
         run: |
           set -euo pipefail
@@ -93,8 +89,11 @@ jobs:
       - name: Post Azure ML Studio link
         if: always()
         run: |
-          set -euo pipefail
-          command -v jq >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y jq; }
+          # jq may not exist on the runner; install if needed
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
           JOB=$(jq -r '.job' aml-job.json)
           STUDIO_URL="https://ml.azure.com/experiments/${{ env.AML_JOB_NAME }}/jobs/${JOB}/overview?wsid=/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ env.AZURE_RESOURCE_GROUP }}/providers/Microsoft.MachineLearningServices/workspaces/${{ env.AZURE_ML_WORKSPACE }}"
           echo "🔗 Azure ML Studio: $STUDIO_URL"
