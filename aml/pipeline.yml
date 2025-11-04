@@ -1,30 +1,27 @@
-# aml/pipeline.yml
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
-name: auto-pricing-e2e
-description: Train and register a RandomForest model for used car pricing
+display_name: auto_pricing_pipeline
+description: Train a model and register it.
 
+# NOTE:
+# - For literal parameters (numbers/strings) DO NOT use "type: integer/string" at the PIPELINE JOB level.
+# - Provide literal defaults here (or override via --set at submission).
+# - Data inputs (datasets/files) will be provided via --set inputs.training_data=azureml:... in the workflow.
+
+# Pipeline-level inputs (literals provided as plain values)
 inputs:
+  # Will be overridden by the workflow: --set inputs.training_data=azureml:UsedCars:1
   training_data:
-    type: uri_file
+  # Will be overridden by the workflow: --set inputs.target_column=price
   target_column:
-    type: string
-    default: price
-  n_estimators:
-    type: integer
-    default: 100
-  max_depth:
-    type: integer
-    default: 10
-  model_name:
-    type: string
-    default: auto-pricing-model
+  # Provide sensible defaults; can also be overridden with --set inputs.n_estimators=...
+  n_estimators: 100
+  max_depth: 10
+  model_name: auto-pricing-model
 
+# Default compute can be overridden by the workflow --set settings.default_compute=azureml:<cluster>
 settings:
-  # YAML only accepts 'serverless' or a literal 'azureml:<compute-name>'.
-  # We use 'serverless' here and override from the GitHub Action with --set.
   default_compute: serverless
-  continue_on_step_failure: false
 
 jobs:
   train:
@@ -32,13 +29,16 @@ jobs:
     component: file:components/train.yml
     inputs:
       training_data: ${{parent.inputs.training_data}}
-      target_column: ${{parent.inputs.target_column}}
-      n_estimators: ${{parent.inputs.n_estimators}}
-      max_depth: ${{parent.inputs.max_depth}}
+      target_column:  ${{parent.inputs.target_column}}
+      n_estimators:   ${{parent.inputs.n_estimators}}
+      max_depth:      ${{parent.inputs.max_depth}}
+    outputs:
+      model_dir: ${{parent.jobs.register.inputs.model_dir}}
+      metrics:
 
   register:
     type: command
     component: file:components/register.yml
     inputs:
-      model_dir: ${{parent.jobs.train.outputs.model_dir}}  # creates dependency
+      model_dir:  ${{parent.jobs.train.outputs.model_dir}}
       model_name: ${{parent.inputs.model_name}}
