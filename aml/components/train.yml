@@ -3,7 +3,6 @@ name: TrainRandomForest
 display_name: Train RandomForest
 type: command
 
-# component-level inputs/outputs (types are correct here)
 inputs:
   training_data:
     type: uri_file
@@ -19,15 +18,13 @@ outputs:
   metrics:
     type: uri_folder
 
-# your training script (relative to THIS yaml)
-code: ./src/train
+# Put the training script (train.py) in the SAME folder as this YAML
+code: .
 
-# make the environment self-contained
 environment:
   image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
   conda_file: ../env/conda.yml
 
-# pass args to script
 command: >-
   python train.py
   --data ${{inputs.training_data}}
