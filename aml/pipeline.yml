@@ -1,55 +1,65 @@
+# aml/pipeline.yml
 type: pipeline
 name: auto_pricing_pipeline
-description: Train a RandomForest on UsedCars and register the model.
+description: "Train & register a simple regressor for auto pricing"
+experiment_name: auto-pricing-e2e
 
-# run everything on your cluster
-settings:
-  default_compute: azureml:Keith-Compute
+# (Optional) You can also set a default compute here via 'settings: default_compute: ...'
+# We keep it per-job for clarity.
 
-# pipeline-level inputs (filled from az ml job create --set ...)
 inputs:
-  data:
-    type: mltable
+  training_data:
+    type: uri_folder
+    # This points to your registered data asset
+    path: azureml:UsedCars:1
   target_column:
     type: string
+    default: price
   n_estimators:
     type: integer
+    default: 100
   max_depth:
     type: integer
+    default: 10
 
 jobs:
   train:
+    # Inline command job (not a component reference)
     type: command
-    code: .
-    command: >-
-      python aml/train.py
-      --data ${{inputs.data}}
-      --target_column ${{inputs.target_column}}
+    display_name: train
+    code: ../src
+    command: >
+      python train.py
+      --data ${{inputs.training_data}}
+      --target ${{inputs.target_column}}
       --n_estimators ${{inputs.n_estimators}}
       --max_depth ${{inputs.max_depth}}
-      --output_dir ${{outputs.model_dir}}
-    environment:
-      image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
-      conda_file: aml/conda.yml
+      --output ${{outputs.model_dir}}
     inputs:
-      data: ${{parent.inputs.data}}
-      target_column: ${{parent.inputs.target_column}}
+      training_data: ${{parent.inputs.training_data}}
+      target: ${{parent.inputs.target_column}}
       n_estimators: ${{parent.inputs.n_estimators}}
       max_depth: ${{parent.inputs.max_depth}}
     outputs:
       model_dir:
-        mode: rw_mount
         type: uri_folder
+    environment:
+      # IMPORTANT: this path is relative to THIS yaml file (aml/)
+      image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
+      conda_file: ./conda.yml
+    compute: azureml:${{env.AML_COMPUTE}}
 
   register:
     type: command
-    code: .
-    command: >-
-      python aml/register.py
+    display_name: register
+    code: ../src
+    command: >
+      python register.py
       --model_dir ${{inputs.model_dir}}
       --model_name auto-pricing-model
-    environment:
-      image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
-      conda_file: aml/conda.yml
     inputs:
       model_dir: ${{parent.jobs.train.outputs.model_dir}}
+    environment:
+      image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
+      conda_file: ./conda.yml
+    compute: azureml:${{env.AML_COMPUTE}}
