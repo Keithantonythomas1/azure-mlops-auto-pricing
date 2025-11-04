@@ -4,16 +4,25 @@ type: pipeline
 description: Auto pricing end-to-end training + register
 
 settings:
-  default_compute: azureml:Keith-Compute   # <-- change if your compute name is different
+  default_compute: "azureml:Keith-Compute"   # <-- quote values containing a colon
   continue_on_step_failure: false
 
 inputs:
-  # Change to your data asset if different
-  training_data: azureml:UsedCars:1
-  target_column: price
-  n_estimators: 100
-  max_depth: 10
-  model_name: auto-pricing-model
+  training_data:
+    type: mltable
+    path: "azureml:UsedCars:1"               # <-- quote values containing a colon
+  target_column:
+    type: string
+    default: price
+  n_estimators:
+    type: integer
+    default: 100
+  max_depth:
+    type: integer
+    default: 10
+  model_name:
+    type: string
+    default: auto-pricing-model
 
 jobs:
   train:
