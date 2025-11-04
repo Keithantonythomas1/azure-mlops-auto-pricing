@@ -1,17 +1,9 @@
-# aml/components/train.yml
 $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
-name: train_randomforest
-version: 1
-type: command
+name: TrainRandomForest
 display_name: Train RandomForest
-description: Train a RandomForest regressor and output model + metrics
+type: command
 
-# NOTE: this path is relative to this YAML (aml/components/)
-code: ../src/train
-
-# Curated AzureML environment
-environment: azureml://registries/azureml/environments/AzureML-sklearn-1.2-ubuntu20.04-py38-cpu/labels/latest
-
+# component-level inputs/outputs (types are correct here)
 inputs:
   training_data:
     type: uri_file
@@ -19,17 +11,23 @@ inputs:
     type: string
   n_estimators:
     type: integer
-    default: 100
   max_depth:
     type: integer
-    default: 10
-
 outputs:
   model_dir:
     type: uri_folder
   metrics:
     type: uri_folder
 
+# your training script (relative to THIS yaml)
+code: ./src/train
+
+# make the environment self-contained
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240618.v1
+  conda_file: ../env/conda.yml
+
+# pass args to script
 command: >-
   python train.py
   --data ${{inputs.training_data}}
