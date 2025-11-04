@@ -1,21 +1,22 @@
+# aml/components/register.yml
 $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
-name: RegisterModel
+name: register_model
 version: 1
 type: command
 display_name: Register Model
-description: Register the trained model artifact to the workspace model registry
+description: Register the trained model artifact to the AML workspace
 
-# Path is relative to THIS file (components/register.yml)
-code: ../src/register
+code: src/register
 
-# Use a curated env; the script will pip-install azure libs at runtime
-environment: azureml://registries/azureml/environments/sklearn-1.2/labels/latest
+# ✅ Same curated environment
+environment: azureml://registries/azureml/environments/AzureML-sklearn-1.2-ubuntu20.04-py38-cpu/labels/latest
 
 inputs:
   model_dir:
     type: uri_folder
   model_name:
     type: string
+    default: auto-pricing-model
 
 command: >-
   python register.py
