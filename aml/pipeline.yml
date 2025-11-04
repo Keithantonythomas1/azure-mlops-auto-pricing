@@ -1,41 +1,39 @@
-# aml/pipeline.yml
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
-description: Auto pricing end-to-end training + register
+experiment_name: auto-pricing-e2e
+description: Train and register the Auto Pricing model
 
+# Use your existing cluster name here
 settings:
-  default_compute: "azureml:Keith-Compute"
-  continue_on_step_failure: false
+  default_compute: azureml:Keith-Compute
 
-# NOTE: For literals (string/int/bool), do NOT add 'type:' — just give the value or default.
 inputs:
   training_data:
-    type: mltable
-    path: "azureml:UsedCars:1"
-  target_column: "price"
+    type: uri_file
+    # your Registered dataset asset
+    path: azureml:UsedCars:1
+  target_column: price
   n_estimators: 100
   max_depth: 10
-  model_name: "auto-pricing-model"
+  model_name: auto-pricing-model
 
 jobs:
   train:
     type: command
-    # IMPORTANT: no space after 'file:' inside the string
-    component: "file:components/train.yml"
+    component: file: ./components/train.yml
     inputs:
-      training_data: ${{ parent.inputs.training_data }}
-      target_column: ${{ parent.inputs.target_column }}
-      n_estimators: ${{ parent.inputs.n_estimators }}
-      max_depth: ${{ parent.inputs.max_depth }}
+      training_data: ${{parent.inputs.training_data}}
+      target_column:  ${{parent.inputs.target_column}}
+      n_estimators:   ${{parent.inputs.n_estimators}}
+      max_depth:      ${{parent.inputs.max_depth}}
     outputs:
-      model_dir: {}
-      metrics: {}
+      model_dir: ${{parent.jobs.register.inputs.model_dir}}
+      metrics:   # optional, kept for completeness
+        mode: rw_mount
 
   register:
     type: command
-    component: "file:components/register.yml"
+    component: file: ./components/register.yml
     inputs:
-      model_dir: ${{ parent.jobs.train.outputs.model_dir }}
-      model_name: ${{ parent.inputs.model_name }}
-    depends_on:
-      - train
+      model_dir:  ${{jobs.train.outputs.model_dir}}
+      model_name: ${{parent.inputs.model_name}}
