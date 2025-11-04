@@ -6,8 +6,8 @@ description: Train a model and register it.
 # Pipeline-level inputs
 inputs:
   training_data:
-    data: azureml:UsedCars:1
     type: mltable
+    path: azureml:UsedCars:1
     mode: ro_mount
   target_column: price
   n_estimators: 100
@@ -21,7 +21,7 @@ settings:
 jobs:
   train:
     type: command
-    component: file:components/train.yml   # training_data input must be 'mltable' in this component
+    component: file:components/train.yml
     inputs:
       training_data: ${{parent.inputs.training_data}}
       target_column:  ${{parent.inputs.target_column}}
