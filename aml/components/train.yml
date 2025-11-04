@@ -1,15 +1,15 @@
+# aml/components/train.yml
 $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
-name: TrainRandomForest
+name: train_randomforest
 version: 1
 type: command
 display_name: Train RandomForest
-description: Train a RandomForestRegressor and output a pickle + metrics
+description: Train a RandomForest regressor and output model + metrics
 
-# Path is relative to THIS file (components/train.yml)
-code: ../src/train
+code: src/train
 
-# Reliable curated env that contains sklearn & Python
-environment: azureml://registries/azureml/environments/sklearn-1.2/labels/latest
+# ✅ Curated environment from the AzureML registry (works in all workspaces)
+environment: azureml://registries/azureml/environments/AzureML-sklearn-1.2-ubuntu20.04-py38-cpu/labels/latest
 
 inputs:
   training_data:
@@ -18,8 +18,10 @@ inputs:
     type: string
   n_estimators:
     type: integer
+    default: 100
   max_depth:
     type: integer
+    default: 10
 
 outputs:
   model_dir:
@@ -34,4 +36,5 @@ command: >-
   --n_estimators ${{inputs.n_estimators}}
   --max_depth ${{inputs.max_depth}}
   --output ${{outputs.model_dir}}
-  --metrics ${{outputs.metrics}}
+  --metrics_out ${{outputs.metrics}}
+
