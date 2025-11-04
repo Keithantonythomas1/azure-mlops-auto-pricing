@@ -6,9 +6,10 @@ type: command
 display_name: Train RandomForest
 description: Train a RandomForest regressor and output model + metrics
 
-code: src/train
+# NOTE: this path is relative to this YAML (aml/components/)
+code: ../src/train
 
-# ✅ Curated environment from the AzureML registry (works in all workspaces)
+# Curated AzureML environment
 environment: azureml://registries/azureml/environments/AzureML-sklearn-1.2-ubuntu20.04-py38-cpu/labels/latest
 
 inputs:
@@ -37,4 +38,3 @@ command: >-
   --max_depth ${{inputs.max_depth}}
   --output ${{outputs.model_dir}}
   --metrics_out ${{outputs.metrics}}
-
