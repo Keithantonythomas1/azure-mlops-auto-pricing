@@ -18,10 +18,10 @@ env:
   AZURE_REGION: eastus
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE: MyFirstWorkSpace
-  AML_COMPUTE: Keith-Compute         # compute cluster name in your AML workspace
-  AML_JOB_NAME: auto-pricing-e2e     # experiment name (for Studio URL)
+  AML_COMPUTE: Keith-Compute          # compute cluster name in AML
+  AML_JOB_NAME: auto-pricing-e2e      # experiment name shown in Studio
 
-  # Optional if you want to override the dataset from CI (uri_file)
+  # Optional (only if you want to override dataset from CI)
   USEDCARS_NAME: UsedCars
   USEDCARS_VERSION: "1"
 
@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: "3.10"
 
-      # --- OIDC login to Azure ---
+      # ---- OIDC login to Azure ----
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
@@ -64,18 +64,13 @@ jobs:
           az extension add -n ml -y || az extension update -n ml
           az ml -h 1>/dev/null
 
-      # -------- Register component (creates a new version if changed) --------
-      - name: Validate component YAML
-        run: |
-          set -euo pipefail
-          az ml component validate --file components/train.yml
-
+      # ---- (Re)register component (creates a new version when changed) ----
       - name: Register TrainRandomForest component
         run: |
           set -euo pipefail
           az ml component create --file components/train.yml
 
-      # ---------------- Validate pipeline before submit ----------------
+      # ---- Validate pipeline YAML (supported CLI command) ----
       - name: Validate pipeline YAML
         run: |
           set -euo pipefail
@@ -83,16 +78,15 @@ jobs:
             --set settings.default_compute=azureml:${{ env.AML_COMPUTE }} \
                   inputs.target_column=price
 
-      # ---------------- Submit pipeline and capture artifacts ----------------
+      # ---- Submit pipeline and capture artifacts ----
       - name: Submit auto_pricing pipeline
         id: submit
         run: |
           set -euo pipefail
-
           JOB_NAME="auto-pricing-e2e-$(date +'%y%m%d-%H%M%S')"
           echo "🚀 Submitting job: $JOB_NAME"
 
-          # If you ever need to override the dataset version from CI, uncomment:
+          # Optional dataset override (kept commented on purpose)
           # OVERRIDE="--set inputs.training_data.type=uri_file \
           #                inputs.training_data.path=azureml:${{ env.USEDCARS_NAME }}:${{ env.USEDCARS_VERSION }} \
           #                inputs.training_data.mode=ro_mount"
@@ -104,21 +98,18 @@ jobs:
             $OVERRIDE \
             --name "$JOB_NAME" \
             -o json)"
-
           echo "$JOB_JSON" > aml-job.json
 
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update -y && sudo apt-get install -y jq
           fi
-
           JOB_OUT_NAME="$(jq -r '.name // .id // ""' aml-job.json)"
-          echo "job_name=$JOB_OUT_NAME" >> "$GITHUB_OUTPUT"
 
           STUDIO_URL="https://ml.azure.com/experiments/${{ env.AML_JOB_NAME }}/jobs/${JOB_OUT_NAME}/overview?wsid=/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ env.AZURE_RESOURCE_GROUP }}/providers/Microsoft.MachineLearningServices/workspaces/${{ env.AZURE_ML_WORKSPACE }}"
           echo "$STUDIO_URL" | tee aml-studio-link.txt
-          echo "🔗 Azure ML Studio: $STUDIO_URL"
+          echo "job_name=$JOB_OUT_NAME" >> "$GITHUB_OUTPUT"
 
-      # ---------------- Upload artifacts even if job fails ----------------
+      # ---- Upload artifacts even if submit fails ----
       - name: Upload AML job info
         if: always()
         uses: actions/upload-artifact@v4
