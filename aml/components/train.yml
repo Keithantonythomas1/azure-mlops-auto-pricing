@@ -1,13 +1,14 @@
+# components/train.yml
 $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
 
 name: train_random_forest
 display_name: Train RandomForest
 type: command
-version: 3   # bump whenever you change this file
+version: 4   # ⬅️ bump to a brand-new number
 
 inputs:
   training_data:
-    type: uri_file         # CSV file (uri_file)
+    type: uri_file
   target_column:
     type: string
   n_estimators:
@@ -21,11 +22,9 @@ outputs:
   metrics:
     type: uri_folder
 
-# Source code (train.py is here)
 code: .
 
-# ✅ Use a curated Azure ML environment (no image/conda here)
-#   This exists in every region and avoids "image does not exist" errors.
+# 🔒 use a curated Azure ML environment – do NOT add image/conda here
 environment: azureml://registries/azureml/environments/sklearn-1.3/versions/4
 
 command: >-
