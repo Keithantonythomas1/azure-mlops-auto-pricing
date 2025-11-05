@@ -14,25 +14,40 @@ defaults:
     shell: bash
 
 env:
+  # ---- Azure ML workspace context ----
   AZURE_REGION: eastus
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE: MyFirstWorkSpace
   AML_COMPUTE: Keith-Compute
   AML_JOB_NAME: auto-pricing-e2e
+  USEDCARS_NAME: UsedCars
+  USEDCARS_VERSION: "1"
 
 jobs:
   build-train-register:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # 2️⃣ Python setup
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      # 3️⃣ Validate required repo variables
+      - name: Validate required repo variables
+        if: ${{ !vars.AZURE_CLIENT_ID || !vars.AZURE_TENANT_ID || !vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          echo "❌ Missing required repo variables."
+          echo "Set AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID in"
+          echo "GitHub → Settings → Variables → Repository."
+          exit 1
+
+      # 4️⃣ Azure login via OIDC
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
@@ -40,54 +55,70 @@ jobs:
           tenant-id:       ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      # 5️⃣ Verify login
       - name: Verify login
         run: az account show -o table
 
+      # 6️⃣ Set Azure defaults
       - name: Set Azure defaults
         run: |
           az configure --defaults \
             group=${{ env.AZURE_RESOURCE_GROUP }} \
             workspace=${{ env.AZURE_ML_WORKSPACE }} \
             location=${{ env.AZURE_REGION }}
+          echo "✅ Defaults set: RG=${{ env.AZURE_RESOURCE_GROUP }}, WS=${{ env.AZURE_ML_WORKSPACE }}, LOC=${{ env.AZURE_REGION }}"
 
+      # 7️⃣ Install Azure ML CLI v2
       - name: Install / update Azure ML CLI v2
         run: |
-          set -euo pipefail
           az extension add -n ml -y || az extension update -n ml
+          az ml -h 1>/dev/null
 
-      # ---- Register component (corrected path) ----
-      - name: Register train_random_forest component
+      # 8️⃣ Generate unique component version (to avoid immutability errors)
+      - name: Make component version
+        id: compver
+        run: echo "COMP_VER=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
+
+      # 9️⃣ Register TrainRandomForest component (new version)
+      - name: Register TrainRandomForest component
         run: |
           set -euo pipefail
-          az ml component create --file aml/components/train.yml
+          echo "Registering component version: ${COMP_VER}"
+          az ml component create \
+            --file aml/components/train.yml \
+            --set version="${COMP_VER}"
 
-      # ---- Validate pipeline ----
+      # 🔟 Validate pipeline YAML
       - name: Validate pipeline YAML
         run: |
           set -euo pipefail
-          az ml job validate --file aml/pipeline.yml \
-            --set settings.default_compute=azureml:${{ env.AML_COMPUTE }} \
-                  inputs.target_column=price
+          az ml job validate --file aml/pipeline.yml
 
-      # ---- Submit pipeline and capture artifacts ----
+      # 11️⃣ Submit pipeline
       - name: Submit auto_pricing pipeline
-        id: submit
         run: |
           set -euo pipefail
-          JOB_NAME="auto-pricing-e2e-$(date +'%y%m%d-%H%M%S')"
-          JOB_JSON="$(az ml job create \
+          JOB_NAME="${{ env.AML_JOB_NAME }}-$(date +'%y%m%d-%H%M%S')"
+          echo "🚀 Submitting job: $JOB_NAME"
+          az ml job create \
             --file aml/pipeline.yml \
             --set settings.default_compute=azureml:${{ env.AML_COMPUTE }} \
                   inputs.target_column=price \
-            --name "$JOB_NAME" -o json)"
-          echo "$JOB_JSON" > aml-job.json
+            --name "$JOB_NAME"
+          echo "{\"job\":\"$JOB_NAME\"}" > aml-job.json
+
+      # 12️⃣ Post Azure ML Studio link
+      - name: Post Azure ML Studio link
+        if: always()
+        run: |
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update -y && sudo apt-get install -y jq
           fi
-          JOB_OUT_NAME="$(jq -r '.name // .id // ""' aml-job.json)"
-          STUDIO_URL="https://ml.azure.com/experiments/${{ env.AML_JOB_NAME }}/jobs/${JOB_OUT_NAME}/overview?wsid=/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ env.AZURE_RESOURCE_GROUP }}/providers/Microsoft.MachineLearningServices/workspaces/${{ env.AZURE_ML_WORKSPACE }}"
-          echo "$STUDIO_URL" | tee aml-studio-link.txt
+          JOB=$(jq -r '.job' aml-job.json)
+          STUDIO_URL="https://ml.azure.com/experiments/${{ env.AML_JOB_NAME }}/jobs/${JOB}/overview?wsid=/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ env.AZURE_RESOURCE_GROUP }}/providers/Microsoft.MachineLearningServices/workspaces/${{ env.AZURE_ML_WORKSPACE }}"
+          echo "🔗 Azure ML Studio: $STUDIO_URL" | tee aml-studio-link.txt
 
+      # 13️⃣ Upload artifacts
       - name: Upload AML job info
         if: always()
         uses: actions/upload-artifact@v4
@@ -97,6 +128,7 @@ jobs:
             aml-job.json
             aml-studio-link.txt
 
+      # 14️⃣ Logout cleanup
       - name: Logout Azure
         if: always()
         run: az logout || true
