@@ -1,5 +1,4 @@
 name: aml-mlops-cicd
-
 on:
   push:
     branches: [ main ]
@@ -10,21 +9,13 @@ permissions:
   contents: read
 
 env:
-  # >>>>>>>>>>>>>>>>>  EDIT THESE FOUR VALUES  <<<<<<<<<<<<<<<<<
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-  AZURE_RESOURCE_GROUP:  ${{ secrets.AZURE_RESOURCE_GROUP }}
-  AZURE_ML_WORKSPACE:    ${{ secrets.AZURE_ML_WORKSPACE }}
-  AZURE_LOCATION:        ${{ secrets.AZURE_LOCATION }}
-
-  # Optional: default compute for the pipeline (if your YAML uses "default_compute: serverless" you can ignore this)
-  AML_COMPUTE: Keith-Compute
-
-  # File paths in this repo
-  COMPONENT_FILE: components/train.yml
-  PIPELINE_FILE:  aml/pipeline.yml
-
-  # The component name we manage
-  COMPONENT_NAME: train_random_forest
+  AZURE_RESOURCE_GROUP:  MSFT-AI-Class
+  AZURE_ML_WORKSPACE:    MyFirstWorkSpace
+  AZURE_LOCATION:        eastus
+  COMPONENT_NAME:        train_random_forest
+  COMPONENT_FILE:        components/train.yml
+  PIPELINE_FILE:         aml/pipeline.yml
 
 jobs:
   build-train-register:
@@ -34,133 +25,73 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
-      - name: Azure login (OIDC)
+      # ✅ FIXED LOGIN SECTION — uses OIDC (no secrets needed beyond client/tenant/subscription)
+      - name: Azure login via OpenID Connect
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Install / update Azure ML CLI v2
+      - name: Install / Update Azure ML CLI v2
         run: |
-          set -euo pipefail
-          az version
           az extension remove -n ml -y || true
           az extension add -n ml -y
-          az extension show -n ml
+          az ml -h
 
-      - name: Set Azure defaults
+      - name: Configure defaults
         run: |
           az account set --subscription "${AZURE_SUBSCRIPTION_ID}"
           az configure --defaults group="${AZURE_RESOURCE_GROUP}" workspace="${AZURE_ML_WORKSPACE}" location="${AZURE_LOCATION}"
 
-      - name: Show existing component versions
+      - name: Check current component versions
         id: list_versions
-        shell: bash
         run: |
-          set -euo pipefail
-          echo "Existing versions of ${COMPONENT_NAME}:"
-          az ml component list --name "${COMPONENT_NAME}" -o table || true
-          # Capture highest numeric version (if any)
-          HIGHEST="$(az ml component list --name "${COMPONENT_NAME}" -o tsv --query "[].version" 2>/dev/null | sort -V | tail -n1 || true)"
-          echo "highest=${HIGHEST}" >> $GITHUB_OUTPUT
+          az ml component list --name "${COMPONENT_NAME}" -o table || echo "No previous versions found"
+          VER=$(az ml component list --name "${COMPONENT_NAME}" --query "[].version" -o tsv | sort -V | tail -n1)
+          echo "highest_version=${VER:-0}" >> $GITHUB_OUTPUT
 
-      - name: Compute next component version and stage temp spec
-        id: prep_spec
-        shell: bash
+      - name: Compute next version and register
+        id: register
         run: |
-          set -euo pipefail
-          HIGHEST="${{ steps.list_versions.outputs.highest }}"
-          if [[ -z "${HIGHEST}" ]]; then
-            NEXT="1"
-          else
-            # assume plain integer semantic versions
-            NEXT="$(( ${HIGHEST} + 1 ))"
-          fi
-          echo "Will create ${COMPONENT_NAME} version ${NEXT}"
-          echo "next=${NEXT}" >> $GITHUB_OUTPUT
-
-          # Create a temp copy of the component YAML with updated version
-          TMP_SPEC="$(mktemp)"
-          cp "${COMPONENT_FILE}" "${TMP_SPEC}"
-
-          # Replace/insert the version: field (works whether it exists or not)
-          if grep -qE '^version:' "${TMP_SPEC}"; then
-            sed -i -E "s/^version:.*/version: ${NEXT}/" "${TMP_SPEC}"
-          else
-            # insert after 'type: command' line
-            awk -v ver="${NEXT}" '
-              {print}
-              /^type:[[:space:]]*command$/ && !inserted { print "version: " ver; inserted=1 }
-            ' "${TMP_SPEC}" > "${TMP_SPEC}.new" && mv "${TMP_SPEC}.new" "${TMP_SPEC}"
-          fi
-
-          echo "tmp_spec=${TMP_SPEC}" >> $GITHUB_OUTPUT
-
-      - name: Register new component version
-        id: register_component
-        shell: bash
-        run: |
-          set -euo pipefail
-          TMP_SPEC="${{ steps.prep_spec.outputs.tmp_spec }}"
-          az ml component create --file "${TMP_SPEC}"
-          echo "registered_version=${{ steps.prep_spec.outputs.next }}" >> $GITHUB_OUTPUT
+          CUR="${{ steps.list_versions.outputs.highest_version }}"
+          NEXT=$(( CUR + 1 ))
+          echo "Next version will be ${NEXT}"
+          sed -E "s/^version:.*/version: ${NEXT}/" "${COMPONENT_FILE}" > component_temp.yml
+          az ml component create --file component_temp.yml
+          echo "registered_version=${NEXT}" >> $GITHUB_OUTPUT
 
       - name: Verify registration
-        shell: bash
         run: |
-          set -euo pipefail
-          VER="${{ steps.register_component.outputs.registered_version }}"
-          az ml component show --name "${COMPONENT_NAME}" --version "${VER}" -o table
+          az ml component show --name "${COMPONENT_NAME}" --version "${{ steps.register.outputs.registered_version }}" -o table
 
-      - name: Pin component version into pipeline (temp copy)
-        id: pin_pipeline
-        shell: bash
+      - name: Update pipeline to reference new version
+        id: patch_pipeline
         run: |
-          set -euo pipefail
-          VER="${{ steps.register_component.outputs.registered_version }}"
-          SRC="${PIPELINE_FILE}"
-          TMP_PIPE="$(mktemp)"
-          cp "${SRC}" "${TMP_PIPE}"
-
-          # Replace any existing reference like azureml:train_random_forest:<anything> with the new version
-          sed -i -E "s|(component:[[:space:]]*azureml:${COMPONENT_NAME}:)[^[:space:]]+|\\1${VER}|g" "${TMP_PIPE}"
-
-          echo "tmp_pipeline=${TMP_PIPE}" >> $GITHUB_OUTPUT
-          echo "Pinned ${COMPONENT_NAME}:${VER} in temp pipeline spec:"
-          grep -nE "component:[[:space:]]*azureml:${COMPONENT_NAME}:" "${TMP_PIPE}" || true
+          NEXT="${{ steps.register.outputs.registered_version }}"
+          sed -E "s|(component:[[:space:]]*azureml:${COMPONENT_NAME}:)[^[:space:]]+|\\1${NEXT}|g" "${PIPELINE_FILE}" > pipeline_temp.yml
+          echo "tmp_pipeline=pipeline_temp.yml" >> $GITHUB_OUTPUT
 
       - name: Submit pipeline
-        id: submit_job
-        shell: bash
+        id: run_pipeline
         run: |
-          set -euo pipefail
-          TMP_PIPE="${{ steps.pin_pipeline.outputs.tmp_pipeline }}"
-          # Submit and capture job name
-          JOB_NAME="$(az ml job create --file "${TMP_PIPE}" --query name -o tsv)"
-          echo "job_name=${JOB_NAME}" >> $GITHUB_OUTPUT
-          echo "Submitted job: ${JOB_NAME}"
+          JOB=$(az ml job create --file ${{ steps.patch_pipeline.outputs.tmp_pipeline }} --query name -o tsv)
+          echo "job_name=${JOB}" >> $GITHUB_OUTPUT
+          echo "✅ Submitted pipeline job: ${JOB}"
 
-      - name: Save job info artifacts
+      - name: Save job metadata
         if: always()
-        shell: bash
         run: |
-          set -euo pipefail
-          JOB="${{ steps.submit_job.outputs.job_name }}"
-          if [[ -n "${JOB}" ]]; then
-            az ml job show --name "${JOB}" -o json > aml-job.json
-            # Construct a Studio deep link
-            WS_ID="$(az ml workspace show --query id -o tsv)"
-            echo "https://ml.azure.com/experiments/${{ github.event.repository.name }}/runs/${JOB}?wsid=${WS_ID}" > aml-studio-link.txt
-          else
-            echo "{}" > aml-job.json
-            echo "No job submitted." > aml-studio-link.txt
+          JOB=${{ steps.run_pipeline.outputs.job_name }}
+          if [ -n "$JOB" ]; then
+            az ml job show --name "$JOB" -o json > aml-job.json
+            echo "https://ml.azure.com/experiments/${{ github.event.repository.name }}/runs/${JOB}" > aml-studio-link.txt
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: aml-run-info
+          name: aml-job-info
           path: |
             aml-job.json
             aml-studio-link.txt
