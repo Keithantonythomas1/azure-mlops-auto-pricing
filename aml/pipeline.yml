@@ -6,7 +6,7 @@ description: Train a RandomForest model and register it.
 inputs:
   training_data:
     type: uri_file
-    path: azureml:UsedCars:1          # ✅ your current dataset
+    path: azureml:UsedCars:1
     mode: ro_mount
   target_column: price
   n_estimators: 100
