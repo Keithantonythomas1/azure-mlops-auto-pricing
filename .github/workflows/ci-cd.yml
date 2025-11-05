@@ -26,20 +26,22 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
-      # ✅ Exact OIDC login block requested
+      # ✅ OIDC login: omit auth-type, keep id-token permission + federated credential in Entra ID
       - name: Azure login via OpenID Connect
         uses: azure/login@v2
         with:
-          auth-type: OIDC
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      # (Optional) quick sanity check
+      - name: Verify Azure identity
+        run: az account show
+
       - name: Install / Update Azure ML CLI v2
         run: |
-          az extension remove -n ml -y || true
-          az extension add -n ml -y
-          az ml -h
+          az extension add -n ml -y || az extension update -n ml
+          az ml -h 1>/dev/null
 
       - name: Configure defaults
         run: |
