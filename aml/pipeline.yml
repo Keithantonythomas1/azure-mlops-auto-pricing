@@ -19,7 +19,8 @@ settings:
 jobs:
   train:
     type: command
-    component: file:aml/components/train.yml   # <-- corrected path
+    # 👇 IMPORTANT: path is relative to this file's folder (aml/)
+    component: file:components/train.yml
     inputs:
       training_data: ${{parent.inputs.training_data}}
       target_column:  ${{parent.inputs.target_column}}
@@ -31,6 +32,8 @@ jobs:
 
   register:
     type: command
+    # If register.yml is in repo root /components, keep this as-is.
+    # If it's in aml/components, change to file:components/register.yml
     component: file:components/register.yml
     inputs:
       model_dir:  ${{parent.jobs.train.outputs.model_dir}}
