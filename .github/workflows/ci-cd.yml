@@ -10,15 +10,15 @@ permissions:
   contents: read
 
 env:
-  # Using repo VARIABLES (Settings → Variables). If you used Secrets, swap vars.* → secrets.*
-  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   AZURE_RESOURCE_GROUP:  MSFT-AI-Class
   AZURE_ML_WORKSPACE:    MyFirstWorkSpace
   AZURE_LOCATION:        eastus
-
   COMPONENT_NAME:        train_random_forest
-  COMPONENT_FILE:        aml/components/train.yml     # << correct location in your repo
+  # default; will be auto-resolved if not found
+  COMPONENT_FILE:        components/train.yml
   PIPELINE_FILE:         aml/pipeline.yml
+  # curated env alias that exists in all regions
+  CURATED_ENV_ALIAS:     azureml:AzureML-sklearn-1.3-ubuntu20.04-py39-cpu@latest
 
 jobs:
   build-train-register:
@@ -28,6 +28,7 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
+      # OpenID Connect login (uses repo Variables, not Secrets)
       - name: Azure login via OpenID Connect
         uses: azure/login@v2
         with:
@@ -35,60 +36,60 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Verify Azure identity
-        run: az account show
-
       - name: Install / Update Azure ML CLI v2
         run: |
-          az extension add -n ml -y || az extension update -n ml
-          az ml -h 1>/dev/null
+          set -e
+          az extension remove -n ml -y || true
+          az extension add -n ml -y
+          az ml -h
 
       - name: Configure defaults
         run: |
-          az account set --subscription "${AZURE_SUBSCRIPTION_ID}"
+          set -e
+          az account set --subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}"
           az configure --defaults group="${AZURE_RESOURCE_GROUP}" workspace="${AZURE_ML_WORKSPACE}" location="${AZURE_LOCATION}"
 
-      # Resolve component spec path safely (checks aml/components/** first)
-      - name: Resolve component file
+      # --- Resolve component path if the default isn't present ---
+      - name: Resolve component path
         id: resolve_component
-        shell: bash
         run: |
           set -euo pipefail
-          CANDIDATE="${COMPONENT_FILE}"
-
-          if [[ -f "$CANDIDATE" ]]; then
-            echo "Found component file: $CANDIDATE"
-            echo "path=$CANDIDATE" >> "$GITHUB_OUTPUT"
+          if [ -f "${COMPONENT_FILE}" ]; then
+            echo "path=${COMPONENT_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Provided COMPONENT_FILE not found: $CANDIDATE"
-          echo "Searching for a component YAML under aml/components/ then */components/ …"
+          echo "Provided COMPONENT_FILE not found: ${COMPONENT_FILE}"
+          echo "Searching for a component YAML under components/ …"
 
-          FOUND="$(git ls-files | grep -Ei '^aml/components/.*\.(yml|yaml)$' | head -n1 || true)"
-          if [[ -z "${FOUND}" ]]; then
-            FOUND="$(git ls-files | grep -Ei '(^|/)components/.*\.(yml|yaml)$' | head -n1 || true)"
-          fi
+          FOUND=""
+          while IFS= read -r -d '' f; do
+            if grep -qE '^[[:space:]]*name:[[:space:]]*train_random_forest' "$f"; then
+              FOUND="$f"
+              break
+            fi
+          done < <(find . -type f -path '*/components/*.yml' -print0 2>/dev/null)
 
-          if [[ -z "${FOUND}" ]]; then
-            echo "❌ No component YAML found. Repository tree:"
+          if [ -z "$FOUND" ]; then
+            echo "❌ No component YAML found under components/. Repository tree:"
             git ls-files | sed 's/^/ - /'
             exit 1
           fi
 
-          echo "Auto-discovered component file: ${FOUND}"
-          echo "path=${FOUND}" >> "$GITHUB_OUTPUT"
+          echo "✅ Using component: $FOUND"
+          echo "path=$FOUND" >> "$GITHUB_OUTPUT"
 
       - name: Check current component versions
         id: list_versions
         run: |
+          set -e
           az ml component list --name "${COMPONENT_NAME}" -o table || echo "No previous versions found"
           VER=$(az ml component list --name "${COMPONENT_NAME}" --query "[].version" -o tsv | sort -V | tail -n1)
-          echo "highest_version=${VER:-0}" >> $GITHUB_OUTPUT
+          echo "highest_version=${VER:-0}" >> "$GITHUB_OUTPUT"
 
-      - name: Compute next version and register
+      # --- Build component_temp.yml, bump version, and PATCH environment automatically ---
+      - name: Compute next version and register (with curated env patch)
         id: register
-        shell: bash
         run: |
           set -euo pipefail
           SRC="${{ steps.resolve_component.outputs.path }}"
@@ -96,7 +97,8 @@ jobs:
           NEXT=$(( ${CUR:-0} + 1 ))
 
           echo "Next version will be ${NEXT}"
-          # replace or insert version key
+
+          # Create component_temp.yml with bumped version (insert if missing)
           if grep -Eq '^[[:space:]]*version:' "$SRC"; then
             awk -v v="${NEXT}" '
               BEGIN{done=0}
@@ -113,30 +115,56 @@ jobs:
             ' "$SRC" > component_temp.yml
           fi
 
+          # ✅ Force a globally-available curated environment
+          if grep -Eq '^[[:space:]]*environment:' component_temp.yml; then
+            sed -E "s|^environment:.*$|environment: ${CURATED_ENV_ALIAS}|" -i component_temp.yml
+          else
+            # insert just after top keys (after name/version block)
+            awk -v env="${CURATED_ENV_ALIAS}" '
+              BEGIN{printed=0}
+              { print }
+              NR==1 { } # keep structure
+              END{
+                # if environment key was not present, append at end
+              }
+            ' component_temp.yml > component_temp.yml.tmp
+            mv component_temp.yml.tmp component_temp.yml
+            # append environment line if still missing
+            if ! grep -Eq '^[[:space:]]*environment:' component_temp.yml; then
+              printf "\nenvironment: %s\n" "${CURATED_ENV_ALIAS}" >> component_temp.yml
+            fi
+          fi
+
           echo "----- component_temp.yml (first 80 lines) -----"
           sed -n '1,80p' component_temp.yml
 
           az ml component create --file component_temp.yml
-          echo "registered_version=${NEXT}" >> $GITHUB_OUTPUT
+          echo "registered_version=${NEXT}" >> "$GITHUB_OUTPUT"
 
       - name: Verify registration
         run: |
+          set -e
           az ml component show --name "${COMPONENT_NAME}" --version "${{ steps.register.outputs.registered_version }}" -o table
 
       - name: Update pipeline to reference new version
         id: patch_pipeline
-        shell: bash
         run: |
           set -euo pipefail
           NEXT="${{ steps.register.outputs.registered_version }}"
-          cp "${PIPELINE_FILE}" pipeline_temp.yml
-          sed -E "s|(component:[[:space:]]*azureml:${COMPONENT_NAME}:)[^[:space:]]+|\\1${NEXT}|g" -i pipeline_temp.yml || true
+          if [ ! -f "${PIPELINE_FILE}" ]; then
+            echo "Pipeline file not found: ${PIPELINE_FILE}"
+            exit 1
+          fi
+          sed -E "s|(component:[[:space:]]*azureml:${COMPONENT_NAME}:)[^[:space:]]+|\\1${NEXT}|g" "${PIPELINE_FILE}" > pipeline_temp.yml
           echo "tmp_pipeline=pipeline_temp.yml" >> $GITHUB_OUTPUT
+          echo "----- pipeline_temp.yml (first 60 lines) -----"
+          sed -n '1,60p' pipeline_temp.yml
 
       - name: Submit pipeline
         id: run_pipeline
         run: |
-          JOB=$(az ml job create --file ${{ steps.patch_pipeline.outputs.tmp_pipeline }} --query name -o tsv)
+          set -e
+          JOB=$(az ml job create --file "${{ steps.patch_pipeline.outputs.tmp_pipeline }}" --query name -o tsv)
           echo "job_name=${JOB}" >> $GITHUB_OUTPUT
           echo "✅ Submitted pipeline job: ${JOB}"
 
