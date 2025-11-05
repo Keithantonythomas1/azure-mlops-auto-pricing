@@ -1,12 +1,12 @@
 $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
-name: TrainRandomForest
+name: train_random_forest           # ✅ lowercase, underscores only
 display_name: Train RandomForest
 type: command
 version: 1
 
 inputs:
   training_data:
-    type: uri_file           # single CSV (uri_file)
+    type: uri_file                  # single CSV (uri_file)
   target_column:
     type: string
   n_estimators:
@@ -22,7 +22,7 @@ outputs:
 
 code: .
 
-# ✅ Curated Azure ML environment (no custom image/conda needed)
+# Curated Azure ML environment (stable)
 environment: azureml:AzureML-sklearn-1.3-ubuntu20.04-py310-cpu:latest
 
 command: >-
