@@ -14,10 +14,8 @@ env:
   AZURE_ML_WORKSPACE:    MyFirstWorkSpace
   AZURE_LOCATION:        eastus
   COMPONENT_NAME:        train_random_forest
-  # default; will be auto-resolved if not found
-  COMPONENT_FILE:        components/train.yml
+  COMPONENT_FILE:        components/train.yml   # will auto-resolve if missing
   PIPELINE_FILE:         aml/pipeline.yml
-  # curated env alias that exists in all regions
   CURATED_ENV_ALIAS:     azureml:AzureML-sklearn-1.3-ubuntu20.04-py39-cpu@latest
 
 jobs:
@@ -28,7 +26,7 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
-      # OpenID Connect login (uses repo Variables, not Secrets)
+      # OpenID Connect login (reads repo Variables)
       - name: Azure login via OpenID Connect
         uses: azure/login@v2
         with:
@@ -68,7 +66,7 @@ jobs:
               FOUND="$f"
               break
             fi
-          done < <(find . -type f -path '*/components/*.yml' -print0 2>/dev/null)
+          done < <(find . -type f \( -path '*/components/*.yml' -o -path '*/components/*.yaml' \) -print0 2>/dev/null)
 
           if [ -z "$FOUND" ]; then
             echo "❌ No component YAML found under components/. Repository tree:"
@@ -119,20 +117,8 @@ jobs:
           if grep -Eq '^[[:space:]]*environment:' component_temp.yml; then
             sed -E "s|^environment:.*$|environment: ${CURATED_ENV_ALIAS}|" -i component_temp.yml
           else
-            # insert just after top keys (after name/version block)
-            awk -v env="${CURATED_ENV_ALIAS}" '
-              BEGIN{printed=0}
-              { print }
-              NR==1 { } # keep structure
-              END{
-                # if environment key was not present, append at end
-              }
-            ' component_temp.yml > component_temp.yml.tmp
-            mv component_temp.yml.tmp component_temp.yml
-            # append environment line if still missing
-            if ! grep -Eq '^[[:space:]]*environment:' component_temp.yml; then
-              printf "\nenvironment: %s\n" "${CURATED_ENV_ALIAS}" >> component_temp.yml
-            fi
+            # append environment line if not present
+            printf "\nenvironment: %s\n" "${CURATED_ENV_ALIAS}" >> component_temp.yml
           fi
 
           echo "----- component_temp.yml (first 80 lines) -----"
