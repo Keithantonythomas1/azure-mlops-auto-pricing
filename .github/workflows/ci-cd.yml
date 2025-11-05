@@ -68,7 +68,7 @@ jobs:
       - name: Register TrainRandomForest component
         run: |
           set -euo pipefail
-          az ml component create --file components/train.yml
+          az ml component create --file aml/components/train.yml
 
       # ---- Validate pipeline YAML (supported CLI command) ----
       - name: Validate pipeline YAML
