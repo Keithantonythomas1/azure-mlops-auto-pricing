@@ -14,16 +14,11 @@ defaults:
     shell: bash
 
 env:
-  # ---- Azure ML workspace context ----
   AZURE_REGION: eastus
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE: MyFirstWorkSpace
   AML_COMPUTE: Keith-Compute
   AML_JOB_NAME: auto-pricing-e2e
-
-  # Optional dataset override (keep commented unless needed)
-  USEDCARS_NAME: UsedCars
-  USEDCARS_VERSION: "1"
 
 jobs:
   build-train-register:
@@ -59,15 +54,14 @@ jobs:
         run: |
           set -euo pipefail
           az extension add -n ml -y || az extension update -n ml
-          az ml -h 1>/dev/null
 
-      # ---------- (Re)register the component ----------
-      - name: Register TrainRandomForest component
+      # ---- Register component (corrected path) ----
+      - name: Register train_random_forest component
         run: |
           set -euo pipefail
-          az ml component create --file components/train.yml
+          az ml component create --file aml/components/train.yml
 
-      # ---------- Validate the pipeline ----------
+      # ---- Validate pipeline ----
       - name: Validate pipeline YAML
         run: |
           set -euo pipefail
@@ -75,28 +69,18 @@ jobs:
             --set settings.default_compute=azureml:${{ env.AML_COMPUTE }} \
                   inputs.target_column=price
 
-      # ---------- Submit pipeline and capture artifacts ----------
+      # ---- Submit pipeline and capture artifacts ----
       - name: Submit auto_pricing pipeline
         id: submit
         run: |
           set -euo pipefail
           JOB_NAME="auto-pricing-e2e-$(date +'%y%m%d-%H%M%S')"
-          echo "Submitting job: $JOB_NAME"
-
-          # If you want to override dataset from CI, uncomment OVERRIDE lines
-          # OVERRIDE="--set inputs.training_data.type=uri_file \
-          #                inputs.training_data.path=azureml:${{ env.USEDCARS_NAME }}:${{ env.USEDCARS_VERSION }} \
-          #                inputs.training_data.mode=ro_mount"
-
           JOB_JSON="$(az ml job create \
             --file aml/pipeline.yml \
             --set settings.default_compute=azureml:${{ env.AML_COMPUTE }} \
                   inputs.target_column=price \
-            $OVERRIDE \
-            --name "$JOB_NAME" \
-            -o json)"
+            --name "$JOB_NAME" -o json)"
           echo "$JOB_JSON" > aml-job.json
-
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update -y && sudo apt-get install -y jq
           fi
