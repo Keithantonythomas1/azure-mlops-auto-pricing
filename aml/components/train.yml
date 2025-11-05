@@ -6,7 +6,7 @@ version: 1
 
 inputs:
   training_data:
-    type: uri_file          # ✅ CSV file via URI
+    type: uri_file           # ✅ single CSV file, not MLTable
   target_column:
     type: string
   n_estimators:
