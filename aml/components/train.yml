@@ -1,12 +1,12 @@
 $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
-name: train_random_forest              # must be lowercase, letters/numbers/underscores
+name: train_random_forest
 display_name: Train RandomForest
 type: command
 version: 1
 
 inputs:
   training_data:
-    type: uri_file                      # single CSV file
+    type: uri_file
   target_column:
     type: string
   n_estimators:
@@ -22,12 +22,11 @@ outputs:
 
 code: .
 
-# ✅ Use a public Microsoft image that exists in all regions
-#    (no curated env dependency)
+# ✅ Use a stable Microsoft base image available in all regions
+#    and add our small conda env for pandas/sklearn/joblib.
 environment:
-  image: mcr.microsoft.com/azureml/sklearn-1.3-ubuntu20.04-py38-cpu:latest
-  # If you need extra pip packages, uncomment the next line and provide env/conda.yml
-  # conda_file: ../env/conda.yml
+  image: mcr.microsoft.com/azureml/openmpi4.1-ubuntu20.04:latest
+  conda_file: ../env/conda.yml
 
 command: >-
   python train.py
