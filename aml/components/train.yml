@@ -2,7 +2,6 @@ $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.jso
 name: train_random_forest
 display_name: Train RandomForest
 type: command
-version: 1
 
 inputs:
   training_data:
@@ -22,11 +21,9 @@ outputs:
 
 code: .
 
-# ✅ Use a stable Microsoft base image available in all regions
-#    and add our small conda env for pandas/sklearn/joblib.
-environment:
-  image: mcr.microsoft.com/azureml/openmpi4.1-ubuntu20.04:20240618.v1
-  conda_file: ../env/conda.yml
+# 👇 Use a curated environment from the AzureML registry (region-available)
+# If your workspace doesn't have this exact version, any recent version works.
+environment: azureml:AzureML-sklearn-1.3-ubuntu22.04-py310-cpu:16
 
 command: >-
   python train.py
