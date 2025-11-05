@@ -5,8 +5,8 @@ description: Train a model and register it.
 
 inputs:
   training_data:
-    type: mltable            # ✅ MLTable (Option B)
-    path: azureml:UsedCars:1
+    type: uri_file
+    path: azureml:UsedCars:1   # ✅ your existing File (uri_file) asset
     mode: ro_mount
   target_column: price
   n_estimators: 100
@@ -19,7 +19,7 @@ settings:
 jobs:
   train:
     type: command
-    component: file:components/train.yml   # expects training_data: mltable
+    component: file:components/train.yml
     inputs:
       training_data: ${{parent.inputs.training_data}}
       target_column:  ${{parent.inputs.target_column}}
