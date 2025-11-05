@@ -19,7 +19,7 @@ settings:
 jobs:
   train:
     type: command
-    component: file:components/train.yml
+    component: file:aml/components/train.yml   # <-- corrected path
     inputs:
       training_data: ${{parent.inputs.training_data}}
       target_column:  ${{parent.inputs.target_column}}
