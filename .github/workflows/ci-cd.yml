@@ -1,4 +1,5 @@
 name: aml-mlops-cicd
+
 on:
   push:
     branches: [ main ]
@@ -9,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   AZURE_RESOURCE_GROUP:  MSFT-AI-Class
   AZURE_ML_WORKSPACE:    MyFirstWorkSpace
   AZURE_LOCATION:        eastus
@@ -25,13 +26,14 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
-      # ✅ FIXED LOGIN SECTION — uses OIDC (no secrets needed beyond client/tenant/subscription)
+      # ✅ Exact OIDC login block requested
       - name: Azure login via OpenID Connect
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          auth-type: OIDC
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Install / Update Azure ML CLI v2
         run: |
