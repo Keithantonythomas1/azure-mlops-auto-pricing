@@ -5,8 +5,19 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_squared_error
 
-# MLTable loader
-from mltable import load as mltable_load
+def load_csv_from_uri(path: str) -> pd.DataFrame:
+    # If a direct CSV file is mounted
+    if os.path.isfile(path) and path.lower().endswith(".csv"):
+        return pd.read_csv(path)
+
+    # If a directory is mounted, find a csv inside
+    if os.path.isdir(path):
+        for root, _, files in os.walk(path):
+            for f in files:
+                if f.lower().endswith(".csv"):
+                    return pd.read_csv(os.path.join(root, f))
+
+    raise FileNotFoundError(f"Could not locate a CSV at or under: {path}")
 
 def main():
     p = argparse.ArgumentParser()
@@ -21,24 +32,16 @@ def main():
     os.makedirs(args.output, exist_ok=True)
     os.makedirs(args.metrics_out, exist_ok=True)
 
-    print(f"📂 Loading MLTable from: {args.data}")
-    df = mltable_load(args.data).to_pandas_dataframe()
-    print(f"✅ Loaded dataframe: {df.shape[0]} rows × {df.shape[1]} cols")
-    print(f"🧾 Columns: {list(df.columns)}")
-
+    df = load_csv_from_uri(args.data)
     if args.target not in df.columns:
-        raise ValueError(f"Target '{args.target}' not found. Available: {df.columns.tolist()}")
+        raise ValueError(f"Target '{args.target}' not in columns: {df.columns.tolist()}")
 
     y = df[args.target]
     X = df.drop(columns=[args.target])
 
-    # Make features numeric if needed
-    non_numeric = [c for c in X.columns if not pd.api.types.is_numeric_dtype(X[c])]
-    if non_numeric:
-        print(f"ℹ️ One-hot encoding non-numeric columns: {non_numeric}")
+    # Handle non-numeric columns safely
     X = pd.get_dummies(X, drop_first=True)
 
-    # Basic split for sanity metrics
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
 
     model = RandomForestRegressor(
@@ -47,15 +50,10 @@ def main():
         random_state=42,
         n_jobs=-1,
     )
-    print("🌲 Training RandomForestRegressor ...")
     model.fit(Xtr, ytr)
 
-    # Save model
-    model_path = os.path.join(args.output, "model.joblib")
-    dump(model, model_path)
-    print(f"💾 Model saved to: {model_path}")
+    dump(model, os.path.join(args.output, "model.joblib"))
 
-    # Metrics
     y_pred = model.predict(Xte)
     metrics = {
         "n_estimators": int(args.n_estimators),
@@ -65,11 +63,8 @@ def main():
         "r2": float(r2_score(yte, y_pred)),
         "mse": float(mean_squared_error(yte, y_pred)),
     }
-    metrics_path = os.path.join(args.metrics_out, "metrics.json")
-    with open(metrics_path, "w") as f:
+    with open(os.path.join(args.metrics_out, "metrics.json"), "w") as f:
         json.dump(metrics, f)
-    print(f"📊 Metrics: {metrics}")
-    print(f"📝 Metrics saved to: {metrics_path}")
 
 if __name__ == "__main__":
     main()
