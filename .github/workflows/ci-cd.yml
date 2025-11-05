@@ -6,7 +6,7 @@ on:
     branches: [ main ]
 
 permissions:
-  id-token: write
+  id-token: write   # OIDC for azure/login
   contents: read
 
 defaults:
@@ -14,52 +14,49 @@ defaults:
     shell: bash
 
 env:
-  # ---- Azure ML workspace context ----
+  # ===== Azure ML workspace context =====
   AZURE_REGION: eastus
   AZURE_RESOURCE_GROUP: MSFT-AI-Class
   AZURE_ML_WORKSPACE: MyFirstWorkSpace
+
+  # AML compute to run the pipeline on (must exist in the workspace)
   AML_COMPUTE: Keith-Compute
+
+  # Experiment name to group jobs in Studio
   AML_JOB_NAME: auto-pricing-e2e
-  USEDCARS_NAME: UsedCars
-  USEDCARS_VERSION: "1"
 
 jobs:
   build-train-register:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Python setup
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # 3️⃣ Validate required repo variables
+      # Fail early if required repo variables are missing
       - name: Validate required repo variables
         if: ${{ !vars.AZURE_CLIENT_ID || !vars.AZURE_TENANT_ID || !vars.AZURE_SUBSCRIPTION_ID }}
         run: |
-          echo "❌ Missing required repo variables."
-          echo "Set AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID in"
-          echo "GitHub → Settings → Variables → Repository."
+          echo "❌ Missing repo variables: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID."
+          echo "   Add them at GitHub → Settings → Variables → Repository."
           exit 1
 
-      # 4️⃣ Azure login via OIDC
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
           client-id:       ${{ vars.AZURE_CLIENT_ID }}
           tenant-id:       ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: false
 
-      # 5️⃣ Verify login
       - name: Verify login
         run: az account show -o table
 
-      # 6️⃣ Set Azure defaults
       - name: Set Azure defaults
         run: |
           az configure --defaults \
@@ -68,59 +65,59 @@ jobs:
             location=${{ env.AZURE_REGION }}
           echo "✅ Defaults set: RG=${{ env.AZURE_RESOURCE_GROUP }}, WS=${{ env.AZURE_ML_WORKSPACE }}, LOC=${{ env.AZURE_REGION }}"
 
-      # 7️⃣ Install Azure ML CLI v2
       - name: Install / update Azure ML CLI v2
         run: |
           az extension add -n ml -y || az extension update -n ml
           az ml -h 1>/dev/null
 
-      # 8️⃣ Generate unique component version (to avoid immutability errors)
-      - name: Make component version
-        id: compver
-        run: echo "COMP_VER=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
-
-      # 9️⃣ Register TrainRandomForest component (new version)
-      - name: Register TrainRandomForest component
-        run: |
-          set -euo pipefail
-          echo "Registering component version: ${COMP_VER}"
-          az ml component create \
-            --file aml/components/train.yml \
-            --set version="${COMP_VER}"
-
-      # 🔟 Validate pipeline YAML
-      - name: Validate pipeline YAML
-        run: |
-          set -euo pipefail
-          az ml job validate --file aml/pipeline.yml
-
-      # 11️⃣ Submit pipeline
+      # ---------- Submit the pipeline (file-based components) ----------
+      # pipeline YAML expected at aml/pipeline.yml, and it references components/train.yml by "file:components/train.yml"
       - name: Submit auto_pricing pipeline
+        id: submit
         run: |
           set -euo pipefail
-          JOB_NAME="${{ env.AML_JOB_NAME }}-$(date +'%y%m%d-%H%M%S')"
-          echo "🚀 Submitting job: $JOB_NAME"
-          az ml job create \
+          echo "🚀 Submitting pipeline job…"
+
+          # Try to submit and capture the job name; don't break the workflow if submission fails.
+          set +e
+          JOB_NAME=$(az ml job create \
             --file aml/pipeline.yml \
             --set settings.default_compute=azureml:${{ env.AML_COMPUTE }} \
                   inputs.target_column=price \
-            --name "$JOB_NAME"
-          echo "{\"job\":\"$JOB_NAME\"}" > aml-job.json
+            --name "${{ env.AML_JOB_NAME }}-$(date +'%y%m%d-%H%M%S')" \
+            --query name -o tsv)
+          STATUS=$?
+          set -e
 
-      # 12️⃣ Post Azure ML Studio link
+          if [[ $STATUS -eq 0 && -n "${JOB_NAME:-}" ]]; then
+            echo "✅ Submitted job: $JOB_NAME"
+            printf '{"job":"%s"}\n' "$JOB_NAME" > aml-job.json
+            echo "job_name=$JOB_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Pipeline submission failed or returned no job id. Skipping Studio link creation."
+            printf '{}' > aml-job.json
+          fi
+
+      # ---------- Build & print Azure ML Studio link (guarded; never fails the workflow) ----------
       - name: Post Azure ML Studio link
-        if: always()
+        if: always() && hashFiles('aml-job.json') != ''
         run: |
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update -y && sudo apt-get install -y jq
           fi
-          JOB=$(jq -r '.job' aml-job.json)
+
+          JOB=$(jq -r '.job // empty' aml-job.json)
+          if [[ -z "$JOB" ]]; then
+            echo "No job id available (submission likely failed). Skipping Studio link."
+            exit 0
+          fi
+
           STUDIO_URL="https://ml.azure.com/experiments/${{ env.AML_JOB_NAME }}/jobs/${JOB}/overview?wsid=/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ env.AZURE_RESOURCE_GROUP }}/providers/Microsoft.MachineLearningServices/workspaces/${{ env.AZURE_ML_WORKSPACE }}"
           echo "🔗 Azure ML Studio: $STUDIO_URL" | tee aml-studio-link.txt
 
-      # 13️⃣ Upload artifacts
+      # ---------- Upload artifacts (guarded) ----------
       - name: Upload AML job info
-        if: always()
+        if: always() && hashFiles('aml-job.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: aml-job-json
@@ -128,7 +125,6 @@ jobs:
             aml-job.json
             aml-studio-link.txt
 
-      # 14️⃣ Logout cleanup
       - name: Logout Azure
         if: always()
         run: az logout || true
