@@ -1,12 +1,12 @@
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
 display_name: auto_pricing_pipeline
-description: Train a model and register it.
+description: Train a RandomForest model and register it.
 
 inputs:
   training_data:
     type: uri_file
-    path: azureml:UsedCars:1   # ✅ your existing File (uri_file) asset
+    path: azureml:UsedCars:1          # ✅ your current dataset
     mode: ro_mount
   target_column: price
   n_estimators: 100
