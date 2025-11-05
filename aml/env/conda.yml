@@ -4,7 +4,6 @@ dependencies:
   - python=3.10
   - pip
   - pip:
-      - pandas>=2.0.0
+      - pandas>=2.1.0
       - scikit-learn>=1.3.0
-      - mltable>=1.5.0
-      - azureml-mlflow
+      - joblib>=1.3.0
