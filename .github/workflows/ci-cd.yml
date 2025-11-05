@@ -10,11 +10,14 @@ permissions:
   contents: read
 
 env:
+  # Use repo VARIABLES (Settings ➜ Variables). Switch to secrets.* if you stored them as secrets.
   AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   AZURE_RESOURCE_GROUP:  MSFT-AI-Class
   AZURE_ML_WORKSPACE:    MyFirstWorkSpace
   AZURE_LOCATION:        eastus
+
   COMPONENT_NAME:        train_random_forest
+  # If this exact file exists it will be used. Otherwise we’ll auto-discover a component YAML.
   COMPONENT_FILE:        components/train.yml
   PIPELINE_FILE:         aml/pipeline.yml
 
@@ -26,7 +29,6 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
-      # ✅ OIDC login: omit auth-type, keep id-token permission + federated credential in Entra ID
       - name: Azure login via OpenID Connect
         uses: azure/login@v2
         with:
@@ -34,7 +36,6 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      # (Optional) quick sanity check
       - name: Verify Azure identity
         run: az account show
 
@@ -48,6 +49,33 @@ jobs:
           az account set --subscription "${AZURE_SUBSCRIPTION_ID}"
           az configure --defaults group="${AZURE_RESOURCE_GROUP}" workspace="${AZURE_ML_WORKSPACE}" location="${AZURE_LOCATION}"
 
+      # ---------- FIX: Resolve the component YAML safely ----------
+      - name: Resolve component file
+        id: resolve_component
+        shell: bash
+        run: |
+          set -euo pipefail
+          CANDIDATE="${COMPONENT_FILE}"
+
+          if [[ -f "$CANDIDATE" ]]; then
+            echo "Found component file: $CANDIDATE"
+            echo "path=$CANDIDATE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Provided COMPONENT_FILE not found: $CANDIDATE"
+          echo "Searching for a component YAML under components/ …"
+          FOUND="$(git ls-files | grep -Ei '^components/.*\.(yml|yaml)$' | head -n1 || true)"
+
+          if [[ -z "${FOUND}" ]]; then
+            echo "❌ No component YAML found under components/. Repository tree:"
+            git ls-files | sed 's/^/ - /'
+            exit 1
+          fi
+
+          echo "Auto-discovered component file: ${FOUND}"
+          echo "path=${FOUND}" >> "$GITHUB_OUTPUT"
+
       - name: Check current component versions
         id: list_versions
         run: |
@@ -57,11 +85,36 @@ jobs:
 
       - name: Compute next version and register
         id: register
+        shell: bash
         run: |
+          set -euo pipefail
+          SRC="${{ steps.resolve_component.outputs.path }}"
           CUR="${{ steps.list_versions.outputs.highest_version }}"
-          NEXT=$(( CUR + 1 ))
+          NEXT=$(( ${CUR:-0} + 1 ))
+
           echo "Next version will be ${NEXT}"
-          sed -E "s/^version:.*/version: ${NEXT}/" "${COMPONENT_FILE}" > component_temp.yml
+          # Create a temp with version injected or replaced
+          if grep -Eq '^[[:space:]]*version:' "$SRC"; then
+            # replace existing version line (yaml kept simple)
+            awk -v v="${NEXT}" '
+              BEGIN{done=0}
+              /^[[:space:]]*version:[[:space:]]*/ { print "version: " v; done=1; next }
+              { print }
+              END{ if(done==0) print "version: " v }
+            ' "$SRC" > component_temp.yml
+          else
+            # insert version right after the name: line if present, otherwise append at end
+            awk -v v="${NEXT}" '
+              BEGIN{added=0}
+              /^[[:space:]]*name:[[:space:]]*/ { print; print "version: " v; added=1; next }
+              { print }
+              END{ if(added==0) print "version: " v }
+            ' "$SRC" > component_temp.yml
+          fi
+
+          echo "----- component_temp.yml -----"
+          sed -n '1,80p' component_temp.yml
+
           az ml component create --file component_temp.yml
           echo "registered_version=${NEXT}" >> $GITHUB_OUTPUT
 
@@ -71,9 +124,15 @@ jobs:
 
       - name: Update pipeline to reference new version
         id: patch_pipeline
+        shell: bash
         run: |
+          set -euo pipefail
           NEXT="${{ steps.register.outputs.registered_version }}"
-          sed -E "s|(component:[[:space:]]*azureml:${COMPONENT_NAME}:)[^[:space:]]+|\\1${NEXT}|g" "${PIPELINE_FILE}" > pipeline_temp.yml
+          cp "${PIPELINE_FILE}" pipeline_temp.yml
+
+          # Update any reference like: component: azureml:train_random_forest:1
+          sed -E "s|(component:[[:space:]]*azureml:${COMPONENT_NAME}:)[^[:space:]]+|\\1${NEXT}|g" -i pipeline_temp.yml || true
+
           echo "tmp_pipeline=pipeline_temp.yml" >> $GITHUB_OUTPUT
 
       - name: Submit pipeline
