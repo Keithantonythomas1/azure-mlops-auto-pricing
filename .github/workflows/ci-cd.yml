@@ -128,69 +128,25 @@ jobs:
           fi
           echo "Next version: ${NEXT}"
 
-          # ---------- write Python helper to edit component yaml (no heredoc parsing) ----------
           PYFILE=".edit_component.py"
           : > "$PYFILE"
           printf '%s\n' \
             "import io, re, sys, os" \
-            "src = sys.argv[1]" \
-            "out = sys.argv[2]" \
-            "version = sys.argv[3]" \
-            "env_uri = sys.argv[4]" \
+            "src, out, version, env_uri = sys.argv[1:5]" \
             "text = io.open(src,'r',encoding='utf-8').read()" \
-            "" \
-            "# ensure version" \
             "if re.search(r'(?m)^\\s*version\\s*:', text):" \
             "    text = re.sub(r'(?m)^\\s*version\\s*:\\s*\\S+.*$', f'version: {version}', text)" \
             "else:" \
-            "    if re.search(r'(?m)^\\s*name\\s*:', text):" \
-            "        text = re.sub(r'(?m)^(\\s*name\\s*:[^\\n]*\\n)', r'\\1version: '+version+'\\n', text, count=1)" \
-            "    else:" \
-            "        text = 'version: '+version+'\\n'+text" \
-            "" \
-            "# ensure environment" \
+            "    text = re.sub(r'(?m)^(\\s*name\\s*:[^\\n]*\\n)', r'\\1version: '+version+'\\n', text, count=1)" \
             "if re.search(r'(?m)^\\s*environment\\s*:', text):" \
             "    text = re.sub(r'(?m)^\\s*environment\\s*:\\s*.*$', 'environment: '+env_uri, text)" \
             "else:" \
             "    text = text.rstrip()+'\\n\\nenvironment: '+env_uri+'\\n'" \
-            "" \
-            "# extract python script in command" \
-            "m = re.search(r'(?m)^\\s*command\\s*:\\s*(.*?)(?:\\n[^ \\t]|\\Z)', text, re.S)" \
-            "cmd = (m.group(1) if m else '').replace('\\n',' ')" \
-            "cmd = re.sub(r'\\s+',' ', cmd).strip()" \
-            "m2 = re.search(r'python\\s+([^\\s]+)', cmd)" \
-            "script = m2.group(1) if m2 else 'train.py'" \
-            "base = os.path.basename(script)" \
-            "yaml_dir = os.path.dirname(os.path.abspath(src))" \
-            "candidates = [yaml_dir, 'aml/components', 'components', '.']" \
-            "code_dir = None" \
-            "for root in candidates:" \
-            "    p = os.path.join(root, base)" \
-            "    if os.path.isfile(p):" \
-            "        code_dir = root" \
-            "        break" \
-            "if not code_dir:" \
-            "    for r,_,files in os.walk('.'): " \
-            "        if base in files:" \
-            "            code_dir = r; break" \
-            "if not code_dir:" \
-            "    print(f'ERROR: could not locate {base}', file=sys.stderr); sys.exit(2)" \
-            "" \
-            "# ensure code" \
-            "if re.search(r'(?m)^\\s*code\\s*:', text):" \
-            "    text = re.sub(r'(?m)^\\s*code\\s*:\\s*.*$', 'code: '+code_dir, text)" \
-            "else:" \
-            "    text = text.rstrip()+'\\n\\ncode: '+code_dir+'\\n'" \
-            "" \
             "io.open(out,'w',encoding='utf-8').write(text)" \
-            "print(base)" \
           >> "$PYFILE"
 
-          SCRIPT_BASENAME=$(python "$PYFILE" "$SRC" component_temp.yml "${NEXT}" "${{ steps.resolve_env.outputs.env_uri }}")
-          echo "Resolved script file: ${SCRIPT_BASENAME}"
-          echo "----- component_temp.yml (head) -----"
+          python "$PYFILE" "$SRC" component_temp.yml "${NEXT}" "${{ steps.resolve_env.outputs.env_uri }}"
           sed -n '1,140p' component_temp.yml
-
           az ml component create --file component_temp.yml
           echo "registered_version=${NEXT}" >> "$GITHUB_OUTPUT"
 
@@ -207,24 +163,19 @@ jobs:
           : > "$PY2"
           printf '%s\n' \
             "import io, re, sys" \
-            "pl = sys.argv[1]" \
-            "out = sys.argv[2]" \
-            "comp_name = sys.argv[3]" \
-            "version = sys.argv[4]" \
-            "compute = sys.argv[5]" \
+            "pl, out, comp_name, version, compute = sys.argv[1:6]" \
             "text = io.open(pl,'r',encoding='utf-8').read()" \
             "if re.search(r'(?m)^\\s*default_compute\\s*:', text):" \
             "    text = re.sub(r'(?m)^\\s*default_compute\\s*:\\s*.*$', 'default_compute: '+compute, text)" \
             "else:" \
-            "    text = 'settings:\\n  default_compute: '+compute+'\\n\\n'+text" \
+            "    text = re.sub(r'(?m)^settings\\s*:\\s*$', 'settings:\\n  default_compute: '+compute, text, count=1) if 'settings:' in text else 'settings:\\n  default_compute: '+compute+'\\n\\n'+text" \
             "text = re.sub(r'(?m)(component:\\s*azureml:'+r'{}'+r':)\\S+'.format(re.escape(comp_name)), r'\\g<1>'+version, text)" \
             "io.open(out,'w',encoding='utf-8').write(text)" \
           >> "$PY2"
 
           python "$PY2" "$PL" pipeline_temp.yml "${COMPONENT_NAME}" "${NEXT}" "${COMP_URI}"
           echo "tmp_pipeline=pipeline_temp.yml" >> "$GITHUB_OUTPUT"
-          echo "----- pipeline_temp.yml (head) -----"
-          sed -n '1,120p' pipeline_temp.yml
+          sed -n '1,140p' pipeline_temp.yml
 
       - name: Submit pipeline
         id: run_pipeline
