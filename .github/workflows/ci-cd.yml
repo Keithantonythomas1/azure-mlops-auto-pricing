@@ -14,10 +14,10 @@ env:
   AZURE_ML_WORKSPACE:    MyFirstWorkSpace
   AZURE_LOCATION:        eastus
   COMPONENT_NAME:        train_random_forest
-  COMPONENT_FILE:        components/train.yml         # will auto-resolve if missing
+  COMPONENT_FILE:        aml/components/train.yml        # source-of-truth component YAML
   PIPELINE_FILE:         aml/pipeline.yml
-  AZURE_COMPUTE:         Keith-Compute               # or "serverless"
-  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }}    # optional hard pin
+  AZURE_COMPUTE:         Keith-Compute                   # or "serverless"
+  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }}        # optional hard-pin to a registry/workspace env
 
 jobs:
   build-train-register:
@@ -50,33 +50,23 @@ jobs:
           az account set --subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}"
           az configure --defaults group="${AZURE_RESOURCE_GROUP}" workspace="${AZURE_ML_WORKSPACE}" location="${AZURE_LOCATION}"
 
-      # --- Resolve component path if default isn't present ---
+      # --- Resolve component path ---
       - name: Resolve component path
         id: resolve_component
         run: |
           set -euo pipefail
-          if [ -f "${COMPONENT_FILE}" ]; then
-            echo "path=${COMPONENT_FILE}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          FOUND=""
-          while IFS= read -r -d '' f; do
-            if grep -qE '^[[:space:]]*name:[[:space:]]*'${COMPONENT_NAME} "$f"; then
-              FOUND="$f"; break
-            fi
-          done < <(find . -type f \( -path '*/components/*.yml' -o -path '*/components/*.yaml' \) -print0 2>/dev/null)
-          [ -z "$FOUND" ] && { echo "❌ No component YAML found"; exit 1; }
-          echo "path=$FOUND" >> "$GITHUB_OUTPUT"
+          SRC="${COMPONENT_FILE}"
+          [ ! -f "$SRC" ] && { echo "❌ Component YAML not found: ${COMPONENT_FILE}"; exit 1; }
+          echo "path=$SRC" >> "$GITHUB_OUTPUT"
 
       - name: Check current component versions
         id: list_versions
         run: |
           set -euo pipefail
-          az ml component list --name "${COMPONENT_NAME}" -o table || true
-          VER=$(az ml component list --name "${COMPONENT_NAME}" --query "[].version" -o tsv | sort -V | tail -n1)
+          VER=$(az ml component list --name "${COMPONENT_NAME}" --query "[].version" -o tsv | sort -V | tail -n1 || true)
           echo "highest_version=${VER:-0}" >> "$GITHUB_OUTPUT"
 
-      # --- Resolve compute URI (serverless or azureml:<short-name>) ---
+      # --- Resolve compute URI ---
       - name: Resolve compute
         id: resolve_compute
         run: |
@@ -93,7 +83,7 @@ jobs:
           fi
           echo "compute_uri=azureml:${COMP}" >> "$GITHUB_OUTPUT"
 
-      # --- Environment: use override or create a simple workspace env as fallback ---
+      # --- Env: use override or create a simple workspace env ---
       - name: Resolve or create environment
         id: resolve_env
         run: |
@@ -117,50 +107,35 @@ jobs:
               - pip
               - pip:
                   - scikit-learn==1.3.2
-                  - numpy
                   - pandas
+                  - numpy
                   - joblib
+                  - azureml-mlflow
           YAML
           sed -i "s/REPLACE_VERSION/${ENV_VER}/" env-temp.yml
           az ml environment create --file env-temp.yml
           echo "env_uri=azureml:${ENV_NAME}:${ENV_VER}" >> "$GITHUB_OUTPUT"
 
-      # --- Build component_temp.yml, bump version, and PATCH env + correct code path ---
-      - name: Compute next version and register component (robust code dir)
+      # --- Register component (patch env + correct code dir automatically) ---
+      - name: Compute next version and register component
         id: register
         run: |
           set -euo pipefail
-          SRC="${{ steps.resolve_component.outputs.path }}"     # e.g., components/train.yml (source-of-truth)
+          SRC="${{ steps.resolve_component.outputs.path }}"
           CUR="${{ steps.list_versions.outputs.highest_version }}"
-
-          # Next version
-          if [[ -z "$CUR" || "$CUR" == "0" ]]; then
-            NEXT="$(date +%Y%m%d%H%M%S)"
-          elif [[ "$CUR" =~ ^[0-9]+$ ]]; then
-            NEXT=$(( CUR + 1 ))
-          else
-            NEXT="$(date +%Y%m%d%H%M%S)"
-          fi
+          if [[ -z "$CUR" || "$CUR" == "0" ]]; then NEXT="$(date +%Y%m%d%H%M%S)"
+          elif [[ "$CUR" =~ ^[0-9]+$ ]]; then NEXT=$(( CUR + 1 ))
+          else NEXT="$(date +%Y%m%d%H%M%S)"; fi
           echo "Next version: ${NEXT}"
 
-          # Temp component
+          # bump version into temp
           if grep -Eq '^[[:space:]]*version:' "$SRC"; then
-            awk -v v="${NEXT}" '
-              BEGIN{done=0}
-              /^[[:space:]]*version:[[:space:]]*/ { print "version: " v; done=1; next }
-              { print }
-              END{ if(done==0) print "version: " v }
-            ' "$SRC" > component_temp.yml
+            awk -v v="${NEXT}" 'BEGIN{d=0} /^[[:space:]]*version:[[:space:]]*/{print "version: "v; d=1; next} {print} END{if(!d)print "version: "v}' "$SRC" > component_temp.yml
           else
-            awk -v v="${NEXT}" '
-              BEGIN{added=0}
-              /^[[:space:]]*name:[[:space:]]*/ { print; print "version: " v; added=1; next }
-              { print }
-              END{ if(added==0) print "version: " v }
-            ' "$SRC" > component_temp.yml
+            awk -v v="${NEXT}" 'BEGIN{a=0} /^[[:space:]]*name:[[:space:]]*/{print; print "version: "v; a=1; next} {print} END{if(!a)print "version: "v}' "$SRC" > component_temp.yml
           fi
 
-          # Patch env
+          # patch environment
           ENV_URI="${{ steps.resolve_env.outputs.env_uri }}"
           if grep -Eq '^[[:space:]]*environment:' component_temp.yml; then
             sed -E "s|^[[:space:]]*environment:.*$|environment: ${ENV_URI}|" -i component_temp.yml
@@ -168,72 +143,41 @@ jobs:
             printf "\nenvironment: %s\n" "${ENV_URI}" >> component_temp.yml
           fi
 
-          # ---- KEY: resolve the real script and its folder for 'code:' ----
-          # 1) Guess script name from command (python XYZ.py); fallback to train.py
-          CMD_SCRIPT=$(awk '
-            BEGIN{FS=":"}
-            $1 ~ /command/ {
-              # Reconstruct whole command line (handles folded scalars)
-              cmd=$0
-              while (getline line) {
-                if (line ~ /^[[:space:]]+[a-zA-Z_-]+:/) break
-                cmd=cmd" "line
-              }
-              print cmd
-              exit
-            }' component_temp.yml | sed -E 's/.*python[[:space:]]+([^[:space:]]+).*/\1/' | tr -d '\r' )
-          if [ -z "$CMD_SCRIPT" ] || [[ "$CMD_SCRIPT" == "$0" ]]; then
-            CMD_SCRIPT="train.py"
-          fi
+          # detect script from command, default train.py; set code: to the folder that has it
+          CMD_SCRIPT=$(awk '$0 ~ /^[[:space:]]*command:/ { in=1 } in { print; if ($0 !~ /\\$/) exit }' component_temp.yml | sed -E 's/.*python[[:space:]]+([^[:space:]]+).*/\1/' | tr -d '\r')
+          [ -z "$CMD_SCRIPT" ] && CMD_SCRIPT="train.py"
           BASE=$(basename "$CMD_SCRIPT")
-
-          # 2) Prefer folder beside the YAML if script exists there; otherwise search repo
-          YAML_DIR="$(dirname "$SRC")"
-          if [ -f "${YAML_DIR}/${BASE}" ]; then
-            CODE_DIR="${YAML_DIR}"
-          else
-            # search typical locations first
-            CODE_DIR=$( ( [ -d aml/components ] && find aml/components -maxdepth 2 -type f -name "$BASE" -printf '%h\n' ;
+          CAND_DIR="$(dirname "$SRC")"
+          if [ ! -f "${CAND_DIR}/${BASE}" ]; then
+            CAND_DIR=$( ( [ -d aml/components ] && find aml/components -maxdepth 2 -type f -name "$BASE" -printf '%h\n' ;
                          [ -d components ]     && find components     -maxdepth 2 -type f -name "$BASE" -printf '%h\n' ;
                          find . -maxdepth 3 -type f -name "$BASE" -printf '%h\n' ) | head -n1 )
-            if [ -z "$CODE_DIR" ]; then
-              echo "❌ Could not locate ${BASE} in repo. Listing tree around YAML:"; ls -la "${YAML_DIR}"; exit 1
-            fi
           fi
+          [ -z "$CAND_DIR" ] && { echo "❌ Could not locate ${BASE} in repo."; exit 1; }
 
-          echo "Resolved script: ${BASE}"
-          echo "Resolved code dir: ${CODE_DIR}"
-          ls -la "${CODE_DIR}" || true
-
-          # 3) Patch code: to the correct folder
           if grep -Eq '^[[:space:]]*code:' component_temp.yml; then
-            sed -E "s|^[[:space:]]*code:.*$|code: ${CODE_DIR}|" -i component_temp.yml
+            sed -E "s|^[[:space:]]*code:.*$|code: ${CAND_DIR}|" -i component_temp.yml
           else
-            printf "\ncode: %s\n" "${CODE_DIR}" >> component_temp.yml
+            printf "\ncode: %s\n" "${CAND_DIR}" >> component_temp.yml
           fi
 
-          echo "----- component_temp.yml (first 140 lines) -----"
+          echo "---- component_temp.yml (first 140 lines) ----"
           sed -n '1,140p' component_temp.yml
 
-          # Register component
           az ml component create --file component_temp.yml
           echo "registered_version=${NEXT}" >> "$GITHUB_OUTPUT"
 
-      # --- Normalize pipeline: compute + component references ---
+      # --- Normalize pipeline: compute + component ref ---
       - name: Normalize pipeline (compute, components)
         id: patch_pipeline
         run: |
           set -euo pipefail
           NEXT="${{ steps.register.outputs.registered_version }}"
           COMP_URI="${{ steps.resolve_compute.outputs.compute_uri }}"
-          if [ ! -f "${PIPELINE_FILE}" ]; then
-            echo "❌ Pipeline file not found: ${PIPELINE_FILE}"
-            exit 1
-          fi
-
+          [ ! -f "${PIPELINE_FILE}" ] && { echo "❌ Pipeline file not found: ${PIPELINE_FILE}"; exit 1; }
           cp "${PIPELINE_FILE}" pipeline_temp.yml
 
-          # Patch default_compute
+          # default_compute
           if grep -qE '^[[:space:]]*default_compute:' pipeline_temp.yml; then
             sed -E "s|(^[[:space:]]*default_compute:).*|\\1 ${COMP_URI}|" -i pipeline_temp.yml
           else
@@ -241,17 +185,12 @@ jobs:
             mv pipeline_temp.yml.new pipeline_temp.yml
           fi
 
-          # Update our component version
+          # bump train component version
           sed -E "s|(component:[[:space:]]*azureml:${COMPONENT_NAME}:)[^[:space:]]+|\\1${NEXT}|g" -i pipeline_temp.yml
 
-          # If a stray file-based register component exists, map it to our train comp (or remove)
-          if grep -qE 'component:[[:space:]]*file:components/register\.yml' pipeline_temp.yml; then
-            sed -E "s|component:[[:space:]]*file:components/register\.yml|component: azureml:${COMPONENT_NAME}:${NEXT}|g" -i pipeline_temp.yml
-          fi
-
           echo "tmp_pipeline=pipeline_temp.yml" >> "$GITHUB_OUTPUT"
-          echo "----- pipeline_temp.yml (first 100 lines) -----"
-          sed -n '1,100p' pipeline_temp.yml
+          echo "---- pipeline_temp.yml (first 120 lines) ----"
+          sed -n '1,120p' pipeline_temp.yml
 
       - name: Submit pipeline
         id: run_pipeline
@@ -261,7 +200,7 @@ jobs:
           echo "job_name=${JOB}" >> "$GITHUB_OUTPUT"
           echo "✅ Submitted pipeline job: ${JOB}"
 
-      - name: Save job metadata and download logs
+      - name: Save job metadata & logs
         if: always()
         run: |
           set -euo pipefail
@@ -271,7 +210,6 @@ jobs:
             mkdir -p aml-job-logs
             az ml job download --name "$JOB" --download-path aml-job-logs --all -y || true
             echo "https://ml.azure.com/experiments/${{ github.event.repository.name }}/runs/${JOB}" > aml-studio-link.txt
-            echo "Job status: $(az ml job show --name "$JOB" --query status -o tsv || echo n/a)"
           fi
 
       - name: Upload artifacts
