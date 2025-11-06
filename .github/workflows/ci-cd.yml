@@ -150,7 +150,7 @@ jobs:
               text = text.rstrip()+'\n\nenvironment: '+env_uri+'\n'
 
           io.open(out,'w',encoding='utf-8').write(text)
-PY
+          PY
           # remove the 10-leading-space indentation we used to satisfy YAML
           sed -i 's/^          //' .edit_component.py
 
