@@ -16,7 +16,6 @@ env:
   COMPONENT_NAME:        train_random_forest
   COMPONENT_FILE:        components/train.yml   # will auto-resolve if missing
   PIPELINE_FILE:         aml/pipeline.yml
-  CURATED_ENV_ALIAS:     azureml:AzureML-sklearn-1.3-ubuntu20.04-py39-cpu@latest
 
 jobs:
   build-train-register:
@@ -26,7 +25,6 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
-      # OpenID Connect login (reads repo Variables)
       - name: Azure login via OpenID Connect
         uses: azure/login@v2
         with:
@@ -39,7 +37,7 @@ jobs:
           set -e
           az extension remove -n ml -y || true
           az extension add -n ml -y
-          az ml -h
+          az ml -h 1>/dev/null
 
       - name: Configure defaults
         run: |
@@ -85,7 +83,38 @@ jobs:
           VER=$(az ml component list --name "${COMPONENT_NAME}" --query "[].version" -o tsv | sort -V | tail -n1)
           echo "highest_version=${VER:-0}" >> "$GITHUB_OUTPUT"
 
-      # --- Build component_temp.yml, bump version, and PATCH environment automatically ---
+      # --- Discover a curated sklearn CPU environment from the public 'azureml' registry ---
+      - name: Resolve curated sklearn CPU environment (from registry)
+        id: resolve_env
+        run: |
+          set -euo pipefail
+
+          # Try to prefer sklearn-1.3 CPU; if none in this region, fall back to any sklearn CPU
+          query_envs () {
+            local name_filter="$1"
+            az ml environment list -r azureml --query "[?contains(name, '${name_filter}') && contains(name, 'cpu')].[name,version]" -o tsv
+          }
+
+          CANDIDATES="$(query_envs 'sklearn-1.3' | sort -k1,1 -k2,2V)"
+          if [ -z "$CANDIDATES" ]; then
+            CANDIDATES="$(query_envs 'sklearn' | sort -k1,1 -k2,2V)"
+          fi
+
+          if [ -z "$CANDIDATES" ]; then
+            echo "❌ Could not find any curated sklearn CPU environment in public registry 'azureml'."
+            echo "Tip: run 'az ml environment list -r azureml -o table' locally to inspect."
+            exit 1
+          fi
+
+          # Pick the last (highest version) of the last name group
+          NAME="$(echo "$CANDIDATES" | awk '{print $1}' | tail -n1)"
+          VERSION="$(echo "$CANDIDATES" | awk '{print $2}' | tail -n1)"
+
+          ENV_URI="azureml://registries/azureml/environments/${NAME}/versions/${VERSION}"
+          echo "Resolved curated environment: ${ENV_URI}"
+          echo "env_uri=${ENV_URI}" >> "$GITHUB_OUTPUT"
+
+      # --- Build component_temp.yml, bump version, and PATCH environment to exact registry URI ---
       - name: Compute next version and register (with curated env patch)
         id: register
         run: |
@@ -113,12 +142,12 @@ jobs:
             ' "$SRC" > component_temp.yml
           fi
 
-          # ✅ Force a globally-available curated environment
+          # ✅ Force the resolved curated environment from registry (exact name+version)
+          ENV_URI="${{ steps.resolve_env.outputs.env_uri }}"
           if grep -Eq '^[[:space:]]*environment:' component_temp.yml; then
-            sed -E "s|^environment:.*$|environment: ${CURATED_ENV_ALIAS}|" -i component_temp.yml
+            sed -E "s|^environment:.*$|environment: ${ENV_URI}|" -i component_temp.yml
           else
-            # append environment line if not present
-            printf "\nenvironment: %s\n" "${CURATED_ENV_ALIAS}" >> component_temp.yml
+            printf "\nenvironment: %s\n" "${ENV_URI}" >> component_temp.yml
           fi
 
           echo "----- component_temp.yml (first 80 lines) -----"
