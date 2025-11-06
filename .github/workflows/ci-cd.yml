@@ -16,8 +16,8 @@ env:
   COMPONENT_NAME:        train_random_forest
   COMPONENT_FILE:        aml/components/train.yml
   PIPELINE_FILE:         aml/pipeline.yml
-  AZURE_COMPUTE:         Keith-Compute
-  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }}
+  AZURE_COMPUTE:         Keith-Compute          # or "serverless"
+  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }}  # optional pin
 
 jobs:
   build-train-register:
@@ -113,7 +113,7 @@ jobs:
           az ml environment create --file env-temp.yml
           echo "env_uri=azureml:${ENV_NAME}:${ENV_VER}" >> "$GITHUB_OUTPUT"
 
-      # -------- FIXED STEP: robust YAML command parsing (no awk) --------
+      # ---- FIXED: robust YAML command parsing (Python here-doc; no awk) ----
       - name: Compute next version and register component
         id: register
         run: |
@@ -144,9 +144,9 @@ jobs:
             printf "\nenvironment: %s\n" "${ENV_URI}" >> component_temp.yml
           fi
 
-          # >>> Robustly read the command block and extract the script after 'python '
+          # extract the script after 'python ' from the command block
           CMD_SCRIPT=$(python - <<'PY'
-import re, sys, io
+import re, io
 with io.open('component_temp.yml','r',encoding='utf-8') as f:
     y = f.read()
 m = re.search(r'(?m)^[ \t]*command:[ \t]*(.*?)(?:\n[^ \t]|\\Z)', y, re.S)
@@ -157,12 +157,10 @@ m2 = re.search(r'python\s+([^\s]+)', cmd)
 print(m2.group(1) if m2 else '')
 PY
 )
-          if [ -z "${CMD_SCRIPT}" ]; then
-            CMD_SCRIPT="train.py"
-          fi
+          [ -z "${CMD_SCRIPT}" ] && CMD_SCRIPT="train.py"
           BASE="$(basename "$CMD_SCRIPT")"
 
-          # find the folder that actually contains the script
+          # find the folder that contains the script
           YAML_DIR="$(dirname "$SRC")"
           if [ -f "${YAML_DIR}/${BASE}" ]; then
             CODE_DIR="${YAML_DIR}"
@@ -173,7 +171,7 @@ PY
             [ -z "$CODE_DIR" ] && { echo "❌ Could not locate ${BASE} in repo."; exit 1; }
           fi
 
-          # patch code:
+          # patch code: to the resolved directory
           if grep -Eq '^[[:space:]]*code:' component_temp.yml; then
             sed -E "s|^[[:space:]]*code:.*$|code: ${CODE_DIR}|" -i component_temp.yml
           else
