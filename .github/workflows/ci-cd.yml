@@ -14,11 +14,11 @@ env:
   AZURE_ML_WORKSPACE:    MyFirstWorkSpace
   AZURE_LOCATION:        eastus
   COMPONENT_NAME:        train_random_forest
-  COMPONENT_FILE:        components/train.yml
+  COMPONENT_FILE:        components/train.yml         # will auto-resolve if missing
   PIPELINE_FILE:         aml/pipeline.yml
   # Set this to your compute short-name in the workspace or "serverless"
   AZURE_COMPUTE:         Keith-Compute
-  # Optional hard-pin for env; otherwise the workflow will create a simple workspace env
+  # Optional hard-pin for env; otherwise the workflow creates a simple workspace env
   AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }}
 
 jobs:
@@ -128,13 +128,15 @@ jobs:
           az ml environment create --file env-temp.yml
           echo "env_uri=azureml:${ENV_NAME}:${ENV_VER}" >> "$GITHUB_OUTPUT"
 
-      # --- Build component_temp.yml, bump version, and PATCH environment ---
+      # --- Build component_temp.yml, bump version, and PATCH env + code path (key fix) ---
       - name: Compute next version and register component
         id: register
         run: |
           set -euo pipefail
-          SRC="${{ steps.resolve_component.outputs.path }}"
+          SRC="${{ steps.resolve_component.outputs.path }}"   # e.g., aml/components/train.yml
           CUR="${{ steps.list_versions.outputs.highest_version }}"
+
+          # Compute next version
           if [[ -z "$CUR" || "$CUR" == "0" ]]; then
             NEXT="$(date +%Y%m%d%H%M%S)"
           elif [[ "$CUR" =~ ^[0-9]+$ ]]; then
@@ -144,6 +146,7 @@ jobs:
           fi
           echo "Next version will be ${NEXT}"
 
+          # Create component_temp.yml with bumped version
           if grep -Eq '^[[:space:]]*version:' "$SRC"; then
             awk -v v="${NEXT}" '
               BEGIN{done=0}
@@ -160,6 +163,7 @@ jobs:
             ' "$SRC" > component_temp.yml
           fi
 
+          # Patch environment to resolved curated/workspace env
           ENV_URI="${{ steps.resolve_env.outputs.env_uri }}"
           if grep -Eq '^[[:space:]]*environment:' component_temp.yml; then
             sed -E "s|^[[:space:]]*environment:.*$|environment: ${ENV_URI}|" -i component_temp.yml
@@ -167,6 +171,18 @@ jobs:
             printf "\nenvironment: %s\n" "${ENV_URI}" >> component_temp.yml
           fi
 
+          # **KEY FIX**: Patch code path to the folder that contains train.py (e.g., aml/components)
+          CODE_DIR="$(dirname "$SRC")"
+          if grep -Eq '^[[:space:]]*code:' component_temp.yml; then
+            sed -E "s|^[[:space:]]*code:.*$|code: ${CODE_DIR}|" -i component_temp.yml
+          else
+            printf "\ncode: %s\n" "${CODE_DIR}" >> component_temp.yml
+          fi
+
+          echo "----- component_temp.yml (first 120 lines) -----"
+          sed -n '1,120p' component_temp.yml
+
+          # Register component
           az ml component create --file component_temp.yml
           echo "registered_version=${NEXT}" >> "$GITHUB_OUTPUT"
 
