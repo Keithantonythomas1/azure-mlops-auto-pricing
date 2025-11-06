@@ -131,7 +131,7 @@ jobs:
           PYFILE=".edit_component.py"
           : > "$PYFILE"
           printf '%s\n' \
-            "import io, re, sys, os" \
+            "import io, re, sys" \
             "src, out, version, env_uri = sys.argv[1:5]" \
             "text = io.open(src,'r',encoding='utf-8').read()" \
             "if re.search(r'(?m)^\\s*version\\s*:', text):" \
@@ -150,32 +150,50 @@ jobs:
           az ml component create --file component_temp.yml
           echo "registered_version=${NEXT}" >> "$GITHUB_OUTPUT"
 
-      - name: Normalize pipeline (compute, components)
+      - name: Normalize pipeline (compute, components)  # YAML-safe patch (no regex)
         id: patch_pipeline
         run: |
           set -euo pipefail
+          pip install --quiet "ruamel.yaml>=0.17"
+
           NEXT="${{ steps.register.outputs.registered_version }}"
           COMP_URI="${{ steps.resolve_compute.outputs.compute_uri }}"
           PL="${PIPELINE_FILE}"
           [ ! -f "$PL" ] && { echo "❌ Pipeline file not found: ${PL}"; exit 1; }
 
           PY2=".patch_pipeline.py"
-          : > "$PY2"
-          printf '%s\n' \
-            "import io, re, sys" \
-            "pl, out, comp_name, version, compute = sys.argv[1:6]" \
-            "text = io.open(pl,'r',encoding='utf-8').read()" \
-            "if re.search(r'(?m)^\\s*default_compute\\s*:', text):" \
-            "    text = re.sub(r'(?m)^\\s*default_compute\\s*:\\s*.*$', 'default_compute: '+compute, text)" \
-            "else:" \
-            "    text = re.sub(r'(?m)^settings\\s*:\\s*$', 'settings:\\n  default_compute: '+compute, text, count=1) if 'settings:' in text else 'settings:\\n  default_compute: '+compute+'\\n\\n'+text" \
-            "text = re.sub(r'(?m)(component:\\s*azureml:'+r'{}'+r':)\\S+'.format(re.escape(comp_name)), r'\\g<1>'+version, text)" \
-            "io.open(out,'w',encoding='utf-8').write(text)" \
-          >> "$PY2"
+          cat > "$PY2" << 'PY'
+          from ruamel.yaml import YAML
+          import sys, re
+
+          pl, out, comp_name, version, compute = sys.argv[1:6]
+          yaml = YAML()
+          yaml.preserve_quotes = True
+
+          with open(pl, 'r', encoding='utf-8') as f:
+            data = yaml.load(f)
+
+          # Ensure settings + default_compute
+          if 'settings' not in data or data['settings'] is None:
+            data['settings'] = {}
+          data['settings']['default_compute'] = compute
+
+          # Bump component version(s)
+          jobs = data.get('jobs') or {}
+          prefix = f"azureml:{comp_name}:"
+          for _, job in jobs.items():
+            comp = job.get('component')
+            if isinstance(comp, str) and comp.startswith(prefix):
+              job['component'] = prefix + version
+
+          with open(out, 'w', encoding='utf-8') as f:
+            yaml.dump(data, f)
+          PY
 
           python "$PY2" "$PL" pipeline_temp.yml "${COMPONENT_NAME}" "${NEXT}" "${COMP_URI}"
           echo "tmp_pipeline=pipeline_temp.yml" >> "$GITHUB_OUTPUT"
-          sed -n '1,140p' pipeline_temp.yml
+          echo "----- pipeline_temp.yml (head) -----"
+          sed -n '1,160p' pipeline_temp.yml
 
       - name: Submit pipeline
         id: run_pipeline
