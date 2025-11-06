@@ -153,6 +153,7 @@ else:
 io.open(out,'w',encoding='utf-8').write(text)
 PY
 
+
           # Guard: strip any accidental UI error lines that might have been pasted into the heredoc
           if grep -nE 'Check failure|Invalid workflow file|\\.github/workflows/ci-cd\\.yml|yaml syntax on line' .edit_component.py >/dev/null 2>&1; then
             echo "⚠️ Detected stray UI error lines in .edit_component.py — cleaning…"
