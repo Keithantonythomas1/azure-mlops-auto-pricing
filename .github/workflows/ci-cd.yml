@@ -16,8 +16,8 @@ env:
   COMPONENT_NAME:        train_random_forest
   COMPONENT_FILE:        aml/components/train.yml
   PIPELINE_FILE:         aml/pipeline.yml
-  AZURE_COMPUTE:         Keith-Compute          # or "serverless"
-  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }}  # optional pin
+  AZURE_COMPUTE:         Keith-Compute            # or "serverless"
+  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }} # optional pin to an existing env
 
 jobs:
   build-train-register:
@@ -113,7 +113,6 @@ jobs:
           az ml environment create --file env-temp.yml
           echo "env_uri=azureml:${ENV_NAME}:${ENV_VER}" >> "$GITHUB_OUTPUT"
 
-      # ---- FIXED: robust YAML command parsing (Python here-doc; no awk) ----
       - name: Compute next version and register component
         id: register
         run: |
@@ -129,56 +128,74 @@ jobs:
           fi
           echo "Next version: ${NEXT}"
 
-          # bump version into temp file
-          if grep -Eq '^[[:space:]]*version:' "$SRC"; then
-            awk -v v="${NEXT}" 'BEGIN{d=0} /^[[:space:]]*version:[[:space:]]*/{print "version: "v; d=1; next} {print} END{if(!d)print "version: "v}' "$SRC" > component_temp.yml
-          else
-            awk -v v="${NEXT}" 'BEGIN{a=0} /^[[:space:]]*name:[[:space:]]*/{print; print "version: "v; a=1; next} {print} END{if(!a)print "version: "v}' "$SRC" > component_temp.yml
-          fi
+          # ---------- Python helper: edit component yaml ----------
+          cat > .edit_component.py <<'PY'
+import io, re, sys, os
+src = sys.argv[1]
+out = sys.argv[2]
+version = sys.argv[3]
+env_uri = sys.argv[4]
 
-          # patch environment
-          ENV_URI="${{ steps.resolve_env.outputs.env_uri }}"
-          if grep -Eq '^[[:space:]]*environment:' component_temp.yml; then
-            sed -E "s|^[[:space:]]*environment:.*$|environment: ${ENV_URI}|" -i component_temp.yml
-          else
-            printf "\nenvironment: %s\n" "${ENV_URI}" >> component_temp.yml
-          fi
+text = io.open(src,'r',encoding='utf-8').read()
 
-          # extract the script after 'python ' from the command block
-          CMD_SCRIPT=$(python - <<'PY'
-import re, io
-with io.open('component_temp.yml','r',encoding='utf-8') as f:
-    y = f.read()
-m = re.search(r'(?m)^[ \t]*command:[ \t]*(.*?)(?:\n[^ \t]|\\Z)', y, re.S)
-cmd = m.group(1) if m else ''
-cmd = cmd.replace('\n',' ')
+# ensure version
+if re.search(r'(?m)^\s*version\s*:', text):
+    text = re.sub(r'(?m)^\s*version\s*:\s*\S+.*$', f'version: {version}', text)
+else:
+    # insert after 'name:' line if possible
+    if re.search(r'(?m)^\s*name\s*:', text):
+        text = re.sub(r'(?m)^(\s*name\s*:[^\n]*\n)', r'\1version: '+version+'\n', text, count=1)
+    else:
+        text = 'version: '+version+'\n'+text
+
+# ensure environment
+if re.search(r'(?m)^\s*environment\s*:', text):
+    text = re.sub(r'(?m)^\s*environment\s*:\s*.*$', 'environment: '+env_uri, text)
+else:
+    text = text.rstrip()+'\n\nenvironment: '+env_uri+'\n'
+
+# extract "python <script>"
+m = re.search(r'(?m)^\s*command\s*:\s*(.*?)(?:\n[^ \t]|\Z)', text, re.S)
+cmd = (m.group(1) if m else '').replace('\n',' ')
 cmd = re.sub(r'\s+',' ', cmd).strip()
 m2 = re.search(r'python\s+([^\s]+)', cmd)
-print(m2.group(1) if m2 else '')
+script = m2.group(1) if m2 else 'train.py'
+base = os.path.basename(script)
+
+# try to find the code directory: prefer yaml dir, then common folders
+yaml_dir = os.path.dirname(os.path.abspath(src))
+candidates = [yaml_dir, 'aml/components', 'components', '.']
+code_dir = None
+for root in candidates:
+    p = os.path.join(root, base)
+    if os.path.isfile(p):
+        code_dir = root
+        break
+
+if not code_dir:
+    # last resort: walk shallow
+    for r,_,files in os.walk('.'):
+        if base in files:
+            code_dir = r
+            break
+
+if not code_dir:
+    print(f"ERROR: could not locate {base}", file=sys.stderr)
+    sys.exit(2)
+
+# ensure code:
+if re.search(r'(?m)^\s*code\s*:', text):
+    text = re.sub(r'(?m)^\s*code\s*:\s*.*$', 'code: '+code_dir, text)
+else:
+    text = text.rstrip()+'\n\ncode: '+code_dir+'\n'
+
+io.open(out,'w',encoding='utf-8').write(text)
+print(base)
 PY
-)
-          [ -z "${CMD_SCRIPT}" ] && CMD_SCRIPT="train.py"
-          BASE="$(basename "$CMD_SCRIPT")"
 
-          # find the folder that contains the script
-          YAML_DIR="$(dirname "$SRC")"
-          if [ -f "${YAML_DIR}/${BASE}" ]; then
-            CODE_DIR="${YAML_DIR}"
-          else
-            CODE_DIR=$( ( [ -d aml/components ] && find aml/components -maxdepth 2 -type f -name "$BASE" -printf '%h\n' ;
-                         [ -d components ]     && find components     -maxdepth 2 -type f -name "$BASE" -printf '%h\n' ;
-                         find . -maxdepth 3 -type f -name "$BASE" -printf '%h\n' ) | head -n1 )
-            [ -z "$CODE_DIR" ] && { echo "❌ Could not locate ${BASE} in repo."; exit 1; }
-          fi
-
-          # patch code: to the resolved directory
-          if grep -Eq '^[[:space:]]*code:' component_temp.yml; then
-            sed -E "s|^[[:space:]]*code:.*$|code: ${CODE_DIR}|" -i component_temp.yml
-          else
-            printf "\ncode: %s\n" "${CODE_DIR}" >> component_temp.yml
-          fi
-
-          echo "---- component_temp.yml (first 140 lines) ----"
+          SCRIPT_BASENAME=$(python .edit_component.py "$SRC" component_temp.yml "${NEXT}" "${{ steps.resolve_env.outputs.env_uri }}")
+          echo "Resolved script file: ${SCRIPT_BASENAME}"
+          echo "----- component_temp.yml (head) -----"
           sed -n '1,140p' component_temp.yml
 
           az ml component create --file component_temp.yml
@@ -190,22 +207,35 @@ PY
           set -euo pipefail
           NEXT="${{ steps.register.outputs.registered_version }}"
           COMP_URI="${{ steps.resolve_compute.outputs.compute_uri }}"
-          [ ! -f "${PIPELINE_FILE}" ] && { echo "❌ Pipeline file not found: ${PIPELINE_FILE}"; exit 1; }
-          cp "${PIPELINE_FILE}" pipeline_temp.yml
+          PL="${PIPELINE_FILE}"
+          [ ! -f "$PL" ] && { echo "❌ Pipeline file not found: ${PL}"; exit 1; }
 
-          # default_compute
-          if grep -qE '^[[:space:]]*default_compute:' pipeline_temp.yml; then
-            sed -E "s|(^[[:space:]]*default_compute:).*|\\1 ${COMP_URI}|" -i pipeline_temp.yml
-          else
-            awk -v c="${COMP_URI}" 'NR==1{print "settings:\n  default_compute: " c} {print}' pipeline_temp.yml > pipeline_temp.yml.new
-            mv pipeline_temp.yml.new pipeline_temp.yml
-          fi
+          # ---------- Python helper: patch pipeline yaml ----------
+          cat > .patch_pipeline.py <<'PY'
+import io, re, sys
+pl = sys.argv[1]
+out = sys.argv[2]
+comp_name = sys.argv[3]
+version = sys.argv[4]
+compute = sys.argv[5]
+text = io.open(pl,'r',encoding='utf-8').read()
 
-          # bump train component version
-          sed -E "s|(component:[[:space:]]*azureml:${COMPONENT_NAME}:)[^[:space:]]+|\\1${NEXT}|g" -i pipeline_temp.yml
+# default_compute
+if re.search(r'(?m)^\s*default_compute\s*:', text):
+    text = re.sub(r'(?m)^\s*default_compute\s*:\s*.*$', 'default_compute: '+compute, text)
+else:
+    # Prepend a settings block if missing
+    text = 'settings:\n  default_compute: '+compute+'\n\n'+text
 
+# bump component reference
+text = re.sub(r'(?m)(component:\s*azureml:'+re.escape(comp_name)+r':)\S+', r'\g<1>'+version, text)
+
+io.open(out,'w',encoding='utf-8').write(text)
+PY
+
+          python .patch_pipeline.py "$PL" pipeline_temp.yml "${COMPONENT_NAME}" "${NEXT}" "${COMP_URI}"
           echo "tmp_pipeline=pipeline_temp.yml" >> "$GITHUB_OUTPUT"
-          echo "---- pipeline_temp.yml (first 120 lines) ----"
+          echo "----- pipeline_temp.yml (head) -----"
           sed -n '1,120p' pipeline_temp.yml
 
       - name: Submit pipeline
