@@ -14,7 +14,7 @@ env:
   AZURE_ML_WORKSPACE:    MyFirstWorkSpace
   AZURE_LOCATION:        eastus
   COMPONENT_NAME:        train_random_forest
-  COMPONENT_FILE:        components/train.yml   # will auto-resolve if missing
+  COMPONENT_FILE:        components/train.yml   # auto-resolve if not found
   PIPELINE_FILE:         aml/pipeline.yml
 
 jobs:
@@ -83,16 +83,20 @@ jobs:
           VER=$(az ml component list --name "${COMPONENT_NAME}" --query "[].version" -o tsv | sort -V | tail -n1)
           echo "highest_version=${VER:-0}" >> "$GITHUB_OUTPUT"
 
-      # --- Discover a curated sklearn CPU environment from the public 'azureml' registry ---
+      # --- Discover a curated sklearn CPU environment from the public 'azureml' registry (FIXED flag) ---
       - name: Resolve curated sklearn CPU environment (from registry)
         id: resolve_env
         run: |
           set -euo pipefail
 
-          # Try to prefer sklearn-1.3 CPU; if none in this region, fall back to any sklearn CPU
+          # helper to query the curated registry
           query_envs () {
             local name_filter="$1"
-            az ml environment list -r azureml --query "[?contains(name, '${name_filter}') && contains(name, 'cpu')].[name,version]" -o tsv
+            # NOTE: --registry-name (NOT -r) to avoid the --max-results short flag
+            az ml environment list \
+              --registry-name azureml \
+              --query "[?contains(name, '${name_filter}') && contains(name, 'cpu')].[name,version]" \
+              -o tsv
           }
 
           CANDIDATES="$(query_envs 'sklearn-1.3' | sort -k1,1 -k2,2V)"
@@ -102,11 +106,11 @@ jobs:
 
           if [ -z "$CANDIDATES" ]; then
             echo "❌ Could not find any curated sklearn CPU environment in public registry 'azureml'."
-            echo "Tip: run 'az ml environment list -r azureml -o table' locally to inspect."
+            echo "Tip: run 'az ml environment list --registry-name azureml -o table' locally to inspect."
             exit 1
           fi
 
-          # Pick the last (highest version) of the last name group
+          # pick the highest version of the last env name
           NAME="$(echo "$CANDIDATES" | awk '{print $1}' | tail -n1)"
           VERSION="$(echo "$CANDIDATES" | awk '{print $2}' | tail -n1)"
 
