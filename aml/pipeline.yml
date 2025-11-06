@@ -9,8 +9,8 @@ description: Train a RandomForest model on UsedCars data.
 inputs:
   training_data:
     type: uri_file
-    # quote because the value contains colons
-    path: "azureml:UsedCars:1"
+    path: "azureml:UsedCars:1"   # quoted (contains colons)
+    mode: ro_mount
   target_column:
     type: string
     default: price
@@ -25,7 +25,6 @@ inputs:
 # Settings
 # -----------------------
 settings:
-  # Will be auto-patched by CI if needed
   default_compute: azureml:Keith-Compute
   continue_on_step_failure: false
 
@@ -35,8 +34,7 @@ settings:
 jobs:
   train:
     type: command
-    # CI will auto-bump this version
-    component: azureml:train_random_forest:1
+    component: azureml:train_random_forest:1   # CI bumps this
     inputs:
       training_data:  ${{ parent.inputs.training_data }}
       target_column:  ${{ parent.inputs.target_column }}
