@@ -186,29 +186,29 @@ jobs:
           [ ! -f "$PL" ] && { echo "❌ Pipeline file not found: ${PL}"; exit 1; }
 
           cat > .patch_pipeline.py <<'PY'
-from ruamel.yaml import YAML
-import sys
-pl, out, comp_name, version, compute = sys.argv[1:6]
-yaml = YAML(); yaml.preserve_quotes = True
-with open(pl,'r',encoding='utf-8') as f:
-    data = yaml.load(f)
+          from ruamel.yaml import YAML
+          import sys
+          pl, out, comp_name, version, compute = sys.argv[1:6]
+          yaml = YAML(); yaml.preserve_quotes = True
+          with open(pl,'r',encoding='utf-8') as f:
+              data = yaml.load(f)
 
-# Ensure settings/default_compute
-if 'settings' not in data or data['settings'] is None:
-    data['settings'] = {}
-data['settings']['default_compute'] = compute
-
-# Bump component versions under jobs
-jobs = data.get('jobs') or {}
-prefix = f"azureml:{comp_name}:"
-for job in jobs.values():
-    comp = job.get('component')
-    if isinstance(comp, str) and comp.startswith(prefix):
-        job['component'] = prefix + version
-
-with open(out,'w',encoding='utf-8') as f:
-    yaml.dump(data, f)
-PY
+          # Ensure settings/default_compute
+          if 'settings' not in data or data['settings'] is None:
+              data['settings'] = {}
+          data['settings']['default_compute'] = compute
+          
+          # Bump component versions under jobs
+          jobs = data.get('jobs') or {}
+          prefix = f"azureml:{comp_name}:"
+          for job in jobs.values():
+              comp = job.get('component')
+              if isinstance(comp, str) and comp.startswith(prefix):
+                  job['component'] = prefix + version
+          
+          with open(out,'w',encoding='utf-8') as f:
+              yaml.dump(data, f)
+          PY
 
           python .patch_pipeline.py "$PL" pipeline_temp.yml "${COMPONENT_NAME}" "${NEXT}" "${COMP_URI}"
           echo "tmp_pipeline=pipeline_temp.yml" >> "$GITHUB_OUTPUT"
