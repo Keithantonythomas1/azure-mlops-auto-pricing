@@ -17,7 +17,7 @@ env:
   COMPONENT_FILE:        aml/components/train.yml
   PIPELINE_FILE:         aml/pipeline.yml
   AZURE_COMPUTE:         Keith-Compute            # or "serverless"
-  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }} # optional pin
+  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }} # optional pin to an existing env
 
 jobs:
   build-train-register:
@@ -128,24 +128,28 @@ jobs:
           fi
           echo "Next version: ${NEXT}"
 
-          PYFILE=".edit_component.py"
-          : > "$PYFILE"
-          printf '%s\n' \
-            "import io, re, sys" \
-            "src, out, version, env_uri = sys.argv[1:5]" \
-            "text = io.open(src,'r',encoding='utf-8').read()" \
-            "if re.search(r'(?m)^\\s*version\\s*:', text):" \
-            "    text = re.sub(r'(?m)^\\s*version\\s*:\\s*\\S+.*$', f'version: {version}', text)" \
-            "else:" \
-            "    text = re.sub(r'(?m)^(\\s*name\\s*:[^\\n]*\\n)', r'\\1version: '+version+'\\n', text, count=1)" \
-            "if re.search(r'(?m)^\\s*environment\\s*:', text):" \
-            "    text = re.sub(r'(?m)^\\s*environment\\s*:\\s*.*$', 'environment: '+env_uri, text)" \
-            "else:" \
-            "    text = text.rstrip()+'\\n\\nenvironment: '+env_uri+'\\n'" \
-            "io.open(out,'w',encoding='utf-8').write(text)" \
-          >> "$PYFILE"
+          # ---------- Python helper: edit component yaml ----------
+          cat > .edit_component.py <<'PY'
+import io, re, sys
+src, out, version, env_uri = sys.argv[1:5]
+text = io.open(src,'r',encoding='utf-8').read()
 
-          python "$PYFILE" "$SRC" component_temp.yml "${NEXT}" "${{ steps.resolve_env.outputs.env_uri }}"
+# ensure version
+if re.search(r'(?m)^\s*version\s*:', text):
+    text = re.sub(r'(?m)^\s*version\s*:\s*\S+.*$', f'version: {version}', text)
+else:
+    text = re.sub(r'(?m)^(\s*name\s*:[^\n]*\n)', r'\1version: '+version+'\n', text, count=1)
+
+# ensure environment
+if re.search(r'(?m)^\s*environment\s*:', text):
+    text = re.sub(r'(?m)^\s*environment\s*:\s*.*$', 'environment: '+env_uri, text)
+else:
+    text = text.rstrip()+'\n\nenvironment: '+env_uri+'\n'
+
+io.open(out,'w',encoding='utf-8').write(text)
+PY
+
+          python .edit_component.py "$SRC" component_temp.yml "${NEXT}" "${{ steps.resolve_env.outputs.env_uri }}"
           sed -n '1,140p' component_temp.yml
           az ml component create --file component_temp.yml
           echo "registered_version=${NEXT}" >> "$GITHUB_OUTPUT"
@@ -161,38 +165,33 @@ jobs:
           PL="${PIPELINE_FILE}"
           [ ! -f "$PL" ] && { echo "❌ Pipeline file not found: ${PL}"; exit 1; }
 
-          PY2=".patch_pipeline.py"
-          cat > "$PY2" << 'PY'
-          from ruamel.yaml import YAML
-          import sys, re
+          cat > .patch_pipeline.py <<'PY'
+from ruamel.yaml import YAML
+import sys
+pl, out, comp_name, version, compute = sys.argv[1:6]
+yaml = YAML(); yaml.preserve_quotes = True
+with open(pl,'r',encoding='utf-8') as f:
+    data = yaml.load(f)
 
-          pl, out, comp_name, version, compute = sys.argv[1:6]
-          yaml = YAML()
-          yaml.preserve_quotes = True
+# Ensure settings/default_compute
+if 'settings' not in data or data['settings'] is None:
+    data['settings'] = {}
+data['settings']['default_compute'] = compute
 
-          with open(pl, 'r', encoding='utf-8') as f:
-            data = yaml.load(f)
+# Bump component versions under jobs
+jobs = data.get('jobs') or {}
+prefix = f"azureml:{comp_name}:"
+for job in jobs.values():
+    comp = job.get('component')
+    if isinstance(comp, str) and comp.startswith(prefix):
+        job['component'] = prefix + version
 
-          # Ensure settings + default_compute
-          if 'settings' not in data or data['settings'] is None:
-            data['settings'] = {}
-          data['settings']['default_compute'] = compute
+with open(out,'w',encoding='utf-8') as f:
+    yaml.dump(data, f)
+PY
 
-          # Bump component version(s)
-          jobs = data.get('jobs') or {}
-          prefix = f"azureml:{comp_name}:"
-          for _, job in jobs.items():
-            comp = job.get('component')
-            if isinstance(comp, str) and comp.startswith(prefix):
-              job['component'] = prefix + version
-
-          with open(out, 'w', encoding='utf-8') as f:
-            yaml.dump(data, f)
-          PY
-
-          python "$PY2" "$PL" pipeline_temp.yml "${COMPONENT_NAME}" "${NEXT}" "${COMP_URI}"
+          python .patch_pipeline.py "$PL" pipeline_temp.yml "${COMPONENT_NAME}" "${NEXT}" "${COMP_URI}"
           echo "tmp_pipeline=pipeline_temp.yml" >> "$GITHUB_OUTPUT"
-          echo "----- pipeline_temp.yml (head) -----"
           sed -n '1,160p' pipeline_temp.yml
 
       - name: Submit pipeline
