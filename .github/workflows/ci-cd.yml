@@ -133,24 +133,27 @@ jobs:
           echo "Next version: ${NEXT}"
           # ---------- Python helper: edit component yaml ----------
           cat > .edit_component.py <<'PY'
-import io, re, sys
-src, out, version, env_uri = sys.argv[1:5]
-text = io.open(src,'r',encoding='utf-8').read()
+          import io, re, sys
+          src, out, version, env_uri = sys.argv[1:5]
+          text = io.open(src,'r',encoding='utf-8').read()
 
-# ensure version
-if re.search(r'(?m)^\s*version\s*:', text):
-    text = re.sub(r'(?m)^\s*version\s*:\s*\S+.*$', f'version: {version}', text)
-else:
-    text = re.sub(r'(?m)^(\s*name\s*:[^\n]*\n)', r'\1version: '+version+'\n', text, count=1)
+          # ensure version
+          if re.search(r'(?m)^\s*version\s*:', text):
+              text = re.sub(r'(?m)^\s*version\s*:\s*\S+.*$', f'version: {version}', text)
+          else:
+              text = re.sub(r'(?m)^(\s*name\s*:[^\n]*\n)', r'\1version: '+version+'\n', text, count=1)
 
-# ensure environment
-if re.search(r'(?m)^\s*environment\s*:', text):
-    text = re.sub(r'(?m)^\s*environment\s*:\s*.*$', 'environment: '+env_uri, text)
-else:
-    text = text.rstrip()+'\n\nenvironment: '+env_uri+'\n'
+          # ensure environment
+          if re.search(r'(?m)^\s*environment\s*:', text):
+              text = re.sub(r'(?m)^\s*environment\s*:\s*.*$', 'environment: '+env_uri, text)
+          else:
+              text = text.rstrip()+'\n\nenvironment: '+env_uri+'\n'
 
-io.open(out,'w',encoding='utf-8').write(text)
+          io.open(out,'w',encoding='utf-8').write(text)
 PY
+          # remove the 10-leading-space indentation we used to satisfy YAML
+          sed -i 's/^          //' .edit_component.py
+
 
 
 
