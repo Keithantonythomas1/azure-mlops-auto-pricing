@@ -3,13 +3,10 @@ type: pipeline
 display_name: auto_pricing_pipeline
 description: Train a RandomForest model on UsedCars data.
 
-# -----------------------
-# Inputs
-# -----------------------
 inputs:
   training_data:
     type: uri_file
-    path: "azureml:UsedCars:1"   # quoted (contains colons)
+    path: "azureml:UsedCars:1"
     mode: ro_mount
   target_column:
     type: string
@@ -21,20 +18,14 @@ inputs:
     type: integer
     default: 10
 
-# -----------------------
-# Settings
-# -----------------------
 settings:
   default_compute: azureml:Keith-Compute
   continue_on_step_failure: false
 
-# -----------------------
-# Pipeline jobs
-# -----------------------
 jobs:
   train:
     type: command
-    component: azureml:train_random_forest:1   # CI bumps this
+    component: azureml:train_random_forest:1
     inputs:
       training_data:  ${{ parent.inputs.training_data }}
       target_column:  ${{ parent.inputs.target_column }}
