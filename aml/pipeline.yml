@@ -1,207 +1,49 @@
-name: aml-mlops-cicd
+$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
+type: pipeline
+display_name: auto_pricing_pipeline
+description: Train a RandomForest model on UsedCars data.
 
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+# -----------------------
+# Inputs
+# -----------------------
+inputs:
+  training_data:
+    type: uri_file
+    # quote because the value contains colons
+    path: "azureml:UsedCars:1"
+  target_column:
+    type: string
+    default: price
+  n_estimators:
+    type: integer
+    default: 100
+  max_depth:
+    type: integer
+    default: 10
 
-permissions:
-  id-token: write
-  contents: read
+# -----------------------
+# Settings
+# -----------------------
+settings:
+  # Will be auto-patched by CI if needed
+  default_compute: azureml:Keith-Compute
+  continue_on_step_failure: false
 
-env:
-  AZURE_RESOURCE_GROUP:  MSFT-AI-Class
-  AZURE_ML_WORKSPACE:    MyFirstWorkSpace
-  AZURE_LOCATION:        eastus
-  COMPONENT_NAME:        train_random_forest
-  COMPONENT_FILE:        aml/components/train.yml
-  PIPELINE_FILE:         aml/pipeline.yml
-  AZURE_COMPUTE:         Keith-Compute            # or "serverless"
-  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }} # optional pin
-
+# -----------------------
+# Pipeline jobs
+# -----------------------
 jobs:
-  build-train-register:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - name: Check out repo
-        uses: actions/checkout@v4
-
-      - name: Azure login (federated)
-        uses: azure/login@v2
-        with:
-          auth-type: SERVICE_PRINCIPAL
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Install / Update Azure ML CLI v2
-        run: |
-          set -euo pipefail
-          az extension add -n ml --upgrade -y
-          az ml -h 1>/dev/null
-
-      - name: Configure defaults
-        run: |
-          set -euo pipefail
-          az account set --subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}"
-          az configure --defaults group="${AZURE_RESOURCE_GROUP}" workspace="${AZURE_ML_WORKSPACE}" location="${AZURE_LOCATION}"
-
-      - name: Resolve component path
-        id: resolve_component
-        run: |
-          set -euo pipefail
-          SRC="${COMPONENT_FILE}"
-          [ ! -f "$SRC" ] && { echo "❌ Component YAML not found: ${COMPONENT_FILE}"; exit 1; }
-          echo "path=$SRC" >> "$GITHUB_OUTPUT"
-
-      - name: Check current component versions
-        id: list_versions
-        run: |
-          set -euo pipefail
-          VER=$(az ml component list --name "${COMPONENT_NAME}" --query "[].version" -o tsv | sort -V | tail -n1 || true)
-          echo "highest_version=${VER:-0}" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve compute
-        id: resolve_compute
-        run: |
-          set -euo pipefail
-          COMP="${AZURE_COMPUTE:-serverless}"
-          if [ "$COMP" = "serverless" ]; then
-            echo "compute_uri=serverless" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if ! az ml compute show --name "$COMP" 1>/dev/null 2>&1; then
-            echo "❌ Compute '$COMP' not found in workspace '${AZURE_ML_WORKSPACE}'."
-            az ml compute list -o table || true
-            exit 1
-          fi
-          echo "compute_uri=azureml:${COMP}" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve or create environment
-        id: resolve_env
-        run: |
-          set -euo pipefail
-          if [ -n "${AZML_ENV_URI:-}" ]; then
-            echo "env_uri=${AZML_ENV_URI}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          ENV_NAME="keith-sklearn-ci"
-          ENV_VER="$(date +%Y%m%d%H%M%S)"
-          cat > env-temp.yml <<'YAML'
-          $schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
-          name: keith-sklearn-ci
-          version: REPLACE_VERSION
-          description: Lightweight sklearn CPU env for CI fallback (auto-generated)
-          image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04
-          conda_file:
-            channels: [conda-forge, defaults]
-            dependencies:
-              - python=3.10
-              - pip
-              - pip:
-                  - scikit-learn==1.3.2
-                  - pandas
-                  - numpy
-                  - joblib
-                  - azureml-mlflow
-          YAML
-          sed -i "s/REPLACE_VERSION/${ENV_VER}/" env-temp.yml
-          az ml environment create --file env-temp.yml
-          echo "env_uri=azureml:${ENV_NAME}:${ENV_VER}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute next version and register component
-        id: register
-        run: |
-          set -euo pipefail
-          SRC="${{ steps.resolve_component.outputs.path }}"
-          CUR="${{ steps.list_versions.outputs.highest_version }}"
-          if [[ -z "$CUR" || "$CUR" == "0" ]]; then
-            NEXT="$(date +%Y%m%d%H%M%S)"
-          elif [[ "$CUR" =~ ^[0-9]+$ ]]; then
-            NEXT=$(( CUR + 1 ))
-          else
-            NEXT="$(date +%Y%m%d%H%M%S)"
-          fi
-          echo "Next version: ${NEXT}"
-
-          PYFILE=".edit_component.py"
-          : > "$PYFILE"
-          printf '%s\n' \
-            "import io, re, sys, os" \
-            "src, out, version, env_uri = sys.argv[1:5]" \
-            "text = io.open(src,'r',encoding='utf-8').read()" \
-            "if re.search(r'(?m)^\\s*version\\s*:', text):" \
-            "    text = re.sub(r'(?m)^\\s*version\\s*:\\s*\\S+.*$', f'version: {version}', text)" \
-            "else:" \
-            "    text = re.sub(r'(?m)^(\\s*name\\s*:[^\\n]*\\n)', r'\\1version: '+version+'\\n', text, count=1)" \
-            "if re.search(r'(?m)^\\s*environment\\s*:', text):" \
-            "    text = re.sub(r'(?m)^\\s*environment\\s*:\\s*.*$', 'environment: '+env_uri, text)" \
-            "else:" \
-            "    text = text.rstrip()+'\\n\\nenvironment: '+env_uri+'\\n'" \
-            "io.open(out,'w',encoding='utf-8').write(text)" \
-          >> "$PYFILE"
-
-          python "$PYFILE" "$SRC" component_temp.yml "${NEXT}" "${{ steps.resolve_env.outputs.env_uri }}"
-          sed -n '1,140p' component_temp.yml
-          az ml component create --file component_temp.yml
-          echo "registered_version=${NEXT}" >> "$GITHUB_OUTPUT"
-
-      - name: Normalize pipeline (compute, components)
-        id: patch_pipeline
-        run: |
-          set -euo pipefail
-          NEXT="${{ steps.register.outputs.registered_version }}"
-          COMP_URI="${{ steps.resolve_compute.outputs.compute_uri }}"
-          PL="${PIPELINE_FILE}"
-          [ ! -f "$PL" ] && { echo "❌ Pipeline file not found: ${PL}"; exit 1; }
-
-          PY2=".patch_pipeline.py"
-          : > "$PY2"
-          printf '%s\n' \
-            "import io, re, sys" \
-            "pl, out, comp_name, version, compute = sys.argv[1:6]" \
-            "text = io.open(pl,'r',encoding='utf-8').read()" \
-            "if re.search(r'(?m)^\\s*default_compute\\s*:', text):" \
-            "    text = re.sub(r'(?m)^\\s*default_compute\\s*:\\s*.*$', 'default_compute: '+compute, text)" \
-            "else:" \
-            "    text = re.sub(r'(?m)^settings\\s*:\\s*$', 'settings:\\n  default_compute: '+compute, text, count=1) if 'settings:' in text else 'settings:\\n  default_compute: '+compute+'\\n\\n'+text" \
-            "text = re.sub(r'(?m)(component:\\s*azureml:'+r'{}'+r':)\\S+'.format(re.escape(comp_name)), r'\\g<1>'+version, text)" \
-            "io.open(out,'w',encoding='utf-8').write(text)" \
-          >> "$PY2"
-
-          python "$PY2" "$PL" pipeline_temp.yml "${COMPONENT_NAME}" "${NEXT}" "${COMP_URI}"
-          echo "tmp_pipeline=pipeline_temp.yml" >> "$GITHUB_OUTPUT"
-          sed -n '1,140p' pipeline_temp.yml
-
-      - name: Submit pipeline
-        id: run_pipeline
-        run: |
-          set -euo pipefail
-          JOB=$(az ml job create --file "${{ steps.patch_pipeline.outputs.tmp_pipeline }}" --query name -o tsv)
-          echo "job_name=${JOB}" >> "$GITHUB_OUTPUT"
-          echo "✅ Submitted pipeline job: ${JOB}"
-
-      - name: Save job metadata & logs
-        if: always()
-        run: |
-          set -euo pipefail
-          JOB=${{ steps.run_pipeline.outputs.job_name }}
-          if [ -n "${JOB:-}" ]; then
-            az ml job show --name "$JOB" -o json > aml-job.json || true
-            mkdir -p aml-job-logs
-            az ml job download --name "$JOB" --download-path aml-job-logs --all -y || true
-            echo "https://ml.azure.com/experiments/${{ github.event.repository.name }}/runs/${JOB}" > aml-studio-link.txt
-          fi
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: aml-job-info
-          path: |
-            aml-job.json
-            aml-studio-link.txt
-            aml-job-logs/**
+  train:
+    type: command
+    # CI will auto-bump this version
+    component: azureml:train_random_forest:1
+    inputs:
+      training_data:  ${{ parent.inputs.training_data }}
+      target_column:  ${{ parent.inputs.target_column }}
+      n_estimators:   ${{ parent.inputs.n_estimators }}
+      max_depth:      ${{ parent.inputs.max_depth }}
+    outputs:
+      model_dir:
+        type: uri_folder
+      metrics:
+        type: uri_file
