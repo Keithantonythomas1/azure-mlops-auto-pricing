@@ -131,7 +131,6 @@ jobs:
             NEXT="$(date +%Y%m%d%H%M%S)"
           fi
           echo "Next version: ${NEXT}"
-
           # ---------- Python helper: edit component yaml ----------
           cat > .edit_component.py <<'PY'
 import io, re, sys
@@ -152,6 +151,8 @@ else:
 
 io.open(out,'w',encoding='utf-8').write(text)
 PY
+
+
 
 
           # Guard: strip any accidental UI error lines that might have been pasted into the heredoc
