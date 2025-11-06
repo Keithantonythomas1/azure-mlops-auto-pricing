@@ -16,8 +16,8 @@ env:
   COMPONENT_NAME:        train_random_forest
   COMPONENT_FILE:        aml/components/train.yml
   PIPELINE_FILE:         aml/pipeline.yml
-  AZURE_COMPUTE:         Keith-Compute            # or "serverless"
-  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }} # optional pin to an existing env
+  AZURE_COMPUTE:         Keith-Compute
+  AZML_ENV_URI:          ${{ vars.AZML_ENV_URI }}
 
 jobs:
   build-train-register:
