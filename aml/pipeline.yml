@@ -1,7 +1,7 @@
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
 display_name: auto_pricing_pipeline
-description: Train a RandomForest model on UsedCars data and register it.
+description: Train a RandomForest model on UsedCars data.
 
 # -----------------------
 # Inputs
@@ -9,42 +9,38 @@ description: Train a RandomForest model on UsedCars data and register it.
 inputs:
   training_data:
     type: uri_file
-    path: azureml:UsedCars:1     # your registered dataset
+    path: azureml:UsedCars:1    # registered dataset
     mode: ro_mount
   target_column: price
   n_estimators: 100
   max_depth: 10
-  model_name: auto-pricing-model
 
 # -----------------------
 # Settings
 # -----------------------
 settings:
-  default_compute: Keith-Compute      # your compute cluster
+  # Must be 'serverless' or 'azureml:<compute-short-name>'
+  default_compute: azureml:Keith-Compute
   continue_on_step_failure: false
 
 # -----------------------
 # Pipeline jobs
 # -----------------------
 jobs:
-  # ---- Step 1: Train ----
   train:
     type: command
-    # Explicitly reference the new registered component version
-    component: azureml:train_random_forest:4
+    # NOTE: your CI workflow auto-patches this to the newest version on each run
+    component: azureml:train_random_forest:1
     inputs:
-      training_data: ${{parent.inputs.training_data}}
-      target_column:  ${{parent.inputs.target_column}}
-      n_estimators:   ${{parent.inputs.n_estimators}}
-      max_depth:      ${{parent.inputs.max_depth}}
+      training_data:  ${{ parent.inputs.training_data }}
+      target_column:  ${{ parent.inputs.target_column }}
+      n_estimators:   ${{ parent.inputs.n_estimators }}
+      max_depth:      ${{ parent.inputs.max_depth }}
     outputs:
+      # Make the output contracts explicit so downstream steps (if added later) can bind reliably
       model_dir:
+        type: uri_folder
+        mode: rw_mount
       metrics:
-
-  # ---- Step 2: Register model ----
-  register:
-    type: command
-    component: file:components/register.yml
-    inputs:
-      model_dir:  ${{parent.jobs.train.outputs.model_dir}}
-      model_name: ${{parent.inputs.model_name}}
+        type: uri_file
+        mode: rw_mount
