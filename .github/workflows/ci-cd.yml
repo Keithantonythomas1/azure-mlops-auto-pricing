@@ -16,6 +16,11 @@ env:
   COMPONENT_NAME:        train_random_forest
   COMPONENT_FILE:        components/train.yml          # will auto-resolve if missing
   PIPELINE_FILE:         aml/pipeline.yml
+  # Optional: set this repo/org variable to hard-pin an environment (registry or workspace)
+  # Examples:
+  #   azureml://registries/azureml/environments/AzureML-sklearn-1.5-ubuntu20.04-py310-cpu/versions/5
+  #   azureml:keith-sklearn-ci:20251105
+  AZML_ENV_URI:         ${{ vars.AZML_ENV_URI }}
 
 jobs:
   build-train-register:
@@ -28,10 +33,9 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
-      - name: Azure login via OpenID Connect
+      - name: Azure login (federated)
         uses: azure/login@v2
         with:
-          # Using federated creds; the action handles OIDC under the hood
           auth-type: SERVICE_PRINCIPAL
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -48,8 +52,6 @@ jobs:
           set -euo pipefail
           az account set --subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}"
           az configure --defaults group="${AZURE_RESOURCE_GROUP}" workspace="${AZURE_ML_WORKSPACE}" location="${AZURE_LOCATION}"
-          echo "SUBSCRIPTION set to: $(az account show --query id -o tsv)"
-          echo "RG: ${AZURE_RESOURCE_GROUP}  WS: ${AZURE_ML_WORKSPACE}  LOC: ${AZURE_LOCATION}"
 
       # --- Resolve component path if the default isn't present ---
       - name: Resolve component path
@@ -83,77 +85,95 @@ jobs:
           VER=$(az ml component list --name "${COMPONENT_NAME}" --query "[].version" -o tsv | sort -V | tail -n1)
           echo "highest_version=${VER:-0}" >> "$GITHUB_OUTPUT"
 
-      # --- Robust resolver for a curated scikit-learn CPU environment from the public 'azureml' registry ---
-      - name: Resolve curated sklearn CPU environment (from registry)
+      # --- Resolve environment with robust probe → fallback strategy ---
+      - name: Resolve or create environment
         id: resolve_env
         run: |
           set -euo pipefail
 
-          echo "Listing curated environments from public registry 'azureml' (this can be ~hundreds)…"
-          # Pull a large page and filter locally to avoid brittle JMESPath contains() chains
-          MAP=$(az ml environment list \
-                  --registry-name azureml \
-                  --max-results 2000 \
-                  -o tsv --query "[].join(':',[name,version])" || true)
-
-          if [ -z "${MAP}" ]; then
-            echo "❌ Received an empty list from registry 'azureml'."
-            echo "Debug: az ml environment list --registry-name azureml -o table (top 30):"
-            az ml environment list --registry-name azureml --max-results 50 -o table | head -n 30 || true
-            exit 1
+          # 0) Use explicit override if provided
+          if [ -n "${AZML_ENV_URI:-}" ]; then
+            echo "Using AZML_ENV_URI override: ${AZML_ENV_URI}"
+            echo "env_uri=${AZML_ENV_URI}" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          echo "Top candidates (raw, first 25):"
-          echo "${MAP}" | head -n 25
+          # 1) Probe the public 'azureml' registry for known sklearn CPU curated env families
+          #    We avoid brittle JMESPath joins. For each candidate family name, list versions and pick the highest.
+          CANDIDATE_FAMILIES=(
+            "AzureML-sklearn-1.5-ubuntu20.04-py310-cpu"
+            "AzureML-sklearn-1.5-ubuntu20.04-py39-cpu"
+            "AzureML-sklearn-1.3-ubuntu20.04-py39-cpu"
+            "sklearn-1.5-ubuntu20.04-py310-cpu"
+            "sklearn-1.3-ubuntu20.04-py39-cpu"
+          )
 
-          # Progressive narrowing: prefer AzureML-sklearn + cpu + ubuntu20.04 + py39/py310
-          pick_candidates () {
-            local data="$1"
-            echo "$data" | grep -Ei 'AzureML-sklearn' | grep -Ei 'cpu' | grep -Ei 'ubuntu20\.04' | grep -E 'py(39|310)' || true
-          }
+          found_name=""
+          found_ver=""
 
-          CAND=$(pick_candidates "${MAP}")
-          # Relax filters if still empty
-          if [ -z "${CAND}" ]; then
-            CAND=$(echo "${MAP}" | grep -Ei 'AzureML-sklearn' | grep -Ei 'cpu' || true)
-          fi
-          if [ -z "${CAND}" ]; then
-            CAND=$(echo "${MAP}" | grep -Ei 'sklearn' | grep -Ei 'cpu' || true)
-          fi
-          if [ -z "${CAND}" ]; then
-            CAND=$(echo "${MAP}" | grep -Ei 'sklearn' || true)
-          fi
+          for fam in "${CANDIDATE_FAMILIES[@]}"; do
+            echo "Probing registry 'azureml' for environment family: ${fam}"
+            # List all versions for a given name. If the name doesn't exist, this returns empty.
+            VERS=$(az ml environment list \
+                      --registry-name azureml \
+                      --name "${fam}" \
+                      --query "[].version" -o tsv 2>/dev/null || true)
+            if [ -n "${VERS}" ]; then
+              # Pick the highest (natural) version
+              ver=$(echo "${VERS}" | sort -V | tail -n1)
+              if [ -n "${ver}" ] && [ "${ver}" != "None" ]; then
+                # Validate existence
+                if az ml environment show --registry-name azureml --name "${fam}" --version "${ver}" 1>/dev/null 2>&1; then
+                  found_name="${fam}"
+                  found_ver="${ver}"
+                  echo "✅ Found curated: ${fam}:${ver}"
+                  break
+                fi
+              fi
+            fi
+          done
 
-          if [ -z "${CAND}" ]; then
-            echo "❌ No curated AzureML-sklearn CPU environments found via relaxed filters."
-            echo "Debug: showing a few env names to confirm registry access:"
-            echo "${MAP}" | awk -F: '{print $1}' | sort -u | head -n 50
-            exit 1
-          fi
-
-          echo "Filtered candidates (first 25):"
-          echo "${CAND}" | head -n 25
-
-          # Choose highest version per name; then pick the last tuple after sorting by name,version
-          SEL=$(echo "${CAND}" | awk -F: '{print $1" "$2}' | sort -k1,1 -k2,2V | tail -n1)
-          NAME=$(echo "${SEL}" | awk '{print $1}')
-          VERSION=$(echo "${SEL}" | awk '{print $2}')
-
-          if [ -z "${NAME}" ] || [ -z "${VERSION}" ] || [ "${VERSION}" = "None" ]; then
-            echo "❌ Invalid selection (name='${NAME}', version='${VERSION}')."
-            echo "Selection pool shown above for debugging."
-            exit 1
+          if [ -n "${found_name}" ] && [ -n "${found_ver}" ]; then
+            echo "env_uri=azureml://registries/azureml/environments/${found_name}/versions/${found_ver}" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          echo "Validating selection exists: name='${NAME}', version='${VERSION}'"
-          az ml environment show --registry-name azureml --name "${NAME}" --version "${VERSION}" 1>/dev/null
+          echo "ℹ️ No curated sklearn CPU env found in registry probe. Falling back to workspace-scoped env creation."
 
-          ENV_URI="azureml://registries/azureml/environments/${NAME}/versions/${VERSION}"
-          echo "env_uri=${ENV_URI}" >> "$GITHUB_OUTPUT"
-          echo "✅ Resolved curated environment: ${ENV_URI}"
+          # 2) Fallback: create a lightweight workspace environment and pin to it
+          #    We generate a minimal conda env with scikit-learn and register it in the workspace.
+          ENV_NAME="keith-sklearn-ci"
+          ENV_VER="$(date +%Y%m%d%H%M%S)"
 
-      # --- Build component_temp.yml, bump version, and PATCH environment to exact registry URI ---
-      - name: Compute next version and register (with curated env patch)
+          cat > env-temp.yml <<'YAML'
+          $schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+          name: keith-sklearn-ci
+          version: REPLACE_VERSION
+          description: Lightweight sklearn CPU env for CI fallback (auto-generated)
+          image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04
+          conda_file:
+            channels:
+              - conda-forge
+              - defaults
+            dependencies:
+              - python=3.10
+              - pip
+              - pip:
+                  - scikit-learn==1.3.2
+                  - numpy
+                  - pandas
+                  - joblib
+          YAML
+          sed -i "s/REPLACE_VERSION/${ENV_VER}/" env-temp.yml
+
+          echo "Creating workspace environment ${ENV_NAME}:${ENV_VER} …"
+          az ml environment create --file env-temp.yml
+
+          echo "env_uri=azureml:${ENV_NAME}:${ENV_VER}" >> "$GITHUB_OUTPUT"
+          echo "✅ Fallback workspace env ready: azureml:${ENV_NAME}:${ENV_VER}"
+
+      # --- Build component_temp.yml, bump version, and PATCH environment to exact URI/name ---
+      - name: Compute next version and register (with env patch)
         id: register
         run: |
           set -euo pipefail
@@ -186,7 +206,7 @@ jobs:
             ' "$SRC" > component_temp.yml
           fi
 
-          # Force the resolved curated environment from registry (exact name+version)
+          # Force the resolved environment (registry URI or workspace name:version)
           ENV_URI="${{ steps.resolve_env.outputs.env_uri }}"
           if grep -Eq '^[[:space:]]*environment:' component_temp.yml; then
             sed -E "s|^[[:space:]]*environment:.*$|environment: ${ENV_URI}|" -i component_temp.yml
