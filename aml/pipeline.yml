@@ -6,17 +6,11 @@ description: Train a RandomForest model on UsedCars data.
 inputs:
   training_data:
     type: uri_file
-    path: "azureml:UsedCars:1"
+    path: "azureml:UsedCars:1"   # data asset → keep type
     mode: ro_mount
-  target_column:
-    type: string
-    default: price
-  n_estimators:
-    type: integer
-    default: 100
-  max_depth:
-    type: integer
-    default: 10
+  target_column: price           # literal params → no "type", no "default"
+  n_estimators: 100
+  max_depth: 10
 
 settings:
   default_compute: azureml:Keith-Compute
@@ -25,7 +19,7 @@ settings:
 jobs:
   train:
     type: command
-    component: azureml:train_random_forest:1
+    component: azureml:train_random_forest:1   # CI will bump this
     inputs:
       training_data:  ${{ parent.inputs.training_data }}
       target_column:  ${{ parent.inputs.target_column }}
