@@ -149,6 +149,7 @@ else:
 io.open(out,'w',encoding='utf-8').write(text)
 PY
 
+
           python .edit_component.py "$SRC" component_temp.yml "${NEXT}" "${{ steps.resolve_env.outputs.env_uri }}"
           sed -n '1,140p' component_temp.yml
           az ml component create --file component_temp.yml
