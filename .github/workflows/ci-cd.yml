@@ -28,10 +28,10 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
-      # Fix: explicitly select SERVICE_PRINCIPAL to avoid "OIDC" auth-type crash
       - name: Azure login via OpenID Connect
         uses: azure/login@v2
         with:
+          # Using federated creds; the action handles OIDC under the hood
           auth-type: SERVICE_PRINCIPAL
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -48,6 +48,8 @@ jobs:
           set -euo pipefail
           az account set --subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}"
           az configure --defaults group="${AZURE_RESOURCE_GROUP}" workspace="${AZURE_ML_WORKSPACE}" location="${AZURE_LOCATION}"
+          echo "SUBSCRIPTION set to: $(az account show --query id -o tsv)"
+          echo "RG: ${AZURE_RESOURCE_GROUP}  WS: ${AZURE_ML_WORKSPACE}  LOC: ${AZURE_LOCATION}"
 
       # --- Resolve component path if the default isn't present ---
       - name: Resolve component path
@@ -81,45 +83,74 @@ jobs:
           VER=$(az ml component list --name "${COMPONENT_NAME}" --query "[].version" -o tsv | sort -V | tail -n1)
           echo "highest_version=${VER:-0}" >> "$GITHUB_OUTPUT"
 
-      # --- Resolve curated sklearn CPU environment from the public 'azureml' registry ---
+      # --- Robust resolver for a curated scikit-learn CPU environment from the public 'azureml' registry ---
       - name: Resolve curated sklearn CPU environment (from registry)
         id: resolve_env
         run: |
           set -euo pipefail
 
-          list_envs () {
-            local jmes="$1"
-            az ml environment list \
-              --registry-name azureml \
-              --query "$jmes" \
-              -o tsv
-          }
+          echo "Listing curated environments from public registry 'azureml' (this can be ~hundreds)…"
+          # Pull a large page and filter locally to avoid brittle JMESPath contains() chains
+          MAP=$(az ml environment list \
+                  --registry-name azureml \
+                  --max-results 2000 \
+                  -o tsv --query "[].join(':',[name,version])" || true)
 
-          # Prefer ubuntu20.04 + py39/py310 + cpu + AzureML-sklearn
-          CANDIDATES="$(list_envs "[?contains(name, 'AzureML-sklearn') && contains(name,'cpu') && contains(name,'ubuntu20.04') && (contains(name,'py39') || contains(name,'py310'))].[name,version]")"
-          # Fallback: any AzureML-sklearn cpu
-          if [ -z "$CANDIDATES" ]; then
-            CANDIDATES="$(list_envs "[?contains(name, 'AzureML-sklearn') && contains(name,'cpu')].[name,version]")"
-          fi
-          if [ -z "$CANDIDATES" ]; then
-            echo "❌ No curated AzureML-sklearn CPU environments found in registry 'azureml'."
+          if [ -z "${MAP}" ]; then
+            echo "❌ Received an empty list from registry 'azureml'."
+            echo "Debug: az ml environment list --registry-name azureml -o table (top 30):"
+            az ml environment list --registry-name azureml --max-results 50 -o table | head -n 30 || true
             exit 1
           fi
 
-          SEL="$(echo "$CANDIDATES" | sort -k1,1 -k2,2V | tail -n1)"
-          NAME="$(echo "$SEL" | awk '{print $1}')"
-          VERSION="$(echo "$SEL" | awk '{print $2}')"
+          echo "Top candidates (raw, first 25):"
+          echo "${MAP}" | head -n 25
 
-          if [ -z "$NAME" ] || [ -z "$VERSION" ] || [ "$VERSION" = "None" ]; then
-            echo "❌ Invalid selection (name='$NAME', version='$VERSION')."; exit 1
+          # Progressive narrowing: prefer AzureML-sklearn + cpu + ubuntu20.04 + py39/py310
+          pick_candidates () {
+            local data="$1"
+            echo "$data" | grep -Ei 'AzureML-sklearn' | grep -Ei 'cpu' | grep -Ei 'ubuntu20\.04' | grep -E 'py(39|310)' || true
+          }
+
+          CAND=$(pick_candidates "${MAP}")
+          # Relax filters if still empty
+          if [ -z "${CAND}" ]; then
+            CAND=$(echo "${MAP}" | grep -Ei 'AzureML-sklearn' | grep -Ei 'cpu' || true)
+          fi
+          if [ -z "${CAND}" ]; then
+            CAND=$(echo "${MAP}" | grep -Ei 'sklearn' | grep -Ei 'cpu' || true)
+          fi
+          if [ -z "${CAND}" ]; then
+            CAND=$(echo "${MAP}" | grep -Ei 'sklearn' || true)
           fi
 
-          # Validate selection exists (prevents @latest and None bugs)
-          az ml environment show --registry-name azureml --name "$NAME" --version "$VERSION" 1>/dev/null
+          if [ -z "${CAND}" ]; then
+            echo "❌ No curated AzureML-sklearn CPU environments found via relaxed filters."
+            echo "Debug: showing a few env names to confirm registry access:"
+            echo "${MAP}" | awk -F: '{print $1}' | sort -u | head -n 50
+            exit 1
+          fi
+
+          echo "Filtered candidates (first 25):"
+          echo "${CAND}" | head -n 25
+
+          # Choose highest version per name; then pick the last tuple after sorting by name,version
+          SEL=$(echo "${CAND}" | awk -F: '{print $1" "$2}' | sort -k1,1 -k2,2V | tail -n1)
+          NAME=$(echo "${SEL}" | awk '{print $1}')
+          VERSION=$(echo "${SEL}" | awk '{print $2}')
+
+          if [ -z "${NAME}" ] || [ -z "${VERSION}" ] || [ "${VERSION}" = "None" ]; then
+            echo "❌ Invalid selection (name='${NAME}', version='${VERSION}')."
+            echo "Selection pool shown above for debugging."
+            exit 1
+          fi
+
+          echo "Validating selection exists: name='${NAME}', version='${VERSION}'"
+          az ml environment show --registry-name azureml --name "${NAME}" --version "${VERSION}" 1>/dev/null
 
           ENV_URI="azureml://registries/azureml/environments/${NAME}/versions/${VERSION}"
           echo "env_uri=${ENV_URI}" >> "$GITHUB_OUTPUT"
-          echo "Resolved curated environment: ${ENV_URI}"
+          echo "✅ Resolved curated environment: ${ENV_URI}"
 
       # --- Build component_temp.yml, bump version, and PATCH environment to exact registry URI ---
       - name: Compute next version and register (with curated env patch)
