@@ -1,16 +1,15 @@
 $schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
 name: train_random_forest
-version: 0                       # <— the CI workflow will overwrite this
+version: 0                       # CI can overwrite this
 display_name: Train RandomForest
 type: command
 
-# Snapshot the whole repo so train.py is guaranteed to be included.
-# (If you prefer, set this to the folder that actually contains train.py.)
-code: .
+# If CI doesn't inject an environment, uncomment one of these:
+# environment: azureml://registries/azureml/environments/sklearn-1.0/labels/latest
+# environment: azureml:AzureML-sklearn-1.0-ubuntu20.04-py38-cpu@latest
 
-# The workflow will also overwrite/ensure `environment:` exists.
-# If you want to pin it here yourself, you can put:
-# environment: azureml:keith-sklearn-ci:<version>
+# Snapshot the whole repo so train.py is guaranteed to be included.
+code: .
 
 inputs:
   training_data:
@@ -26,7 +25,7 @@ outputs:
   model_dir:
     type: uri_folder
   metrics:
-    type: uri_file
+    type: uri_folder   # ← CHANGED from uri_file → uri_folder to match train.py
 
 command: >
   python aml/components/train.py
@@ -36,3 +35,6 @@ command: >
   --max_depth ${{inputs.max_depth}}
   --output ${{outputs.model_dir}}
   --metrics_out ${{outputs.metrics}}
+
+resources:
+  instance_count: 1
