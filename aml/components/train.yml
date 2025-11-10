@@ -4,9 +4,8 @@ version: 0                       # CI can overwrite this
 display_name: Train RandomForest
 type: command
 
-# If CI doesn't inject an environment, uncomment one of these:
-# environment: azureml://registries/azureml/environments/sklearn-1.0/labels/latest
-# environment: azureml:AzureML-sklearn-1.0-ubuntu20.04-py38-cpu@latest
+# Added curated Azure ML environment (Option A fix)
+environment: azureml://registries/azureml/environments/sklearn-1.0/labels/latest
 
 # Snapshot the whole repo so train.py is guaranteed to be included.
 code: .
@@ -25,7 +24,7 @@ outputs:
   model_dir:
     type: uri_folder
   metrics:
-    type: uri_folder   # ← CHANGED from uri_file → uri_folder to match train.py
+    type: uri_folder   # Matches train.py (writes metrics.json inside a folder)
 
 command: >
   python aml/components/train.py
