@@ -4,7 +4,7 @@ version: 0                       # CI can overwrite this
 display_name: Train RandomForest
 type: command
 
-# Option 1 fix: force a valid curated environment right in the YAML
+# Valid curated environment across regions/workspaces
 environment: azureml://registries/azureml/environments/sklearn-1.0/labels/latest
 
 # Snapshot the whole repo so train.py is guaranteed to be included.
@@ -24,7 +24,7 @@ outputs:
   model_dir:
     type: uri_folder
   metrics:
-    type: uri_folder   # matches train.py writing metrics.json inside a folder
+    type: uri_folder   # train.py writes metrics.json inside a folder
 
 command: >
   python aml/components/train.py
